@@ -3,7 +3,9 @@
 ; into %ProgramFiles%\WifiCam (required for Win11 FrameServer access).
 
 #define AppName "WifiCam Studio"
-#define AppVersion "0.1.0"
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define AppPublisher "WifiCam Open Source Contributors"
 #define AppURL "https://github.com/sahuadarsh0/wificam"
 #define AppExeName "WifiCam.Desktop.exe"

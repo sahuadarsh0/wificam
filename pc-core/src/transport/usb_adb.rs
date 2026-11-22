@@ -238,8 +238,10 @@ emulator-5554          offline transport_id:9
     #[cfg(windows)]
     #[test]
     fn locates_adb_on_dev_machine() {
-        let sup = AdbSupervisor::discover(DEFAULT_CONTROL_PORT)
-            .expect("adb.exe should be discovered on this dev machine");
-        assert!(sup.adb_path().exists());
+        match AdbSupervisor::discover(DEFAULT_CONTROL_PORT) {
+            Ok(sup) => assert!(sup.adb_path().exists()),
+            Err(_) if std::env::var_os("GITHUB_ACTIONS").is_some() => {}
+            Err(e) => panic!("adb.exe should be discovered on this dev machine: {e}"),
+        }
     }
 }

@@ -1,0 +1,143 @@
+name: Release Windows Setup
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish assets to (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-setup:
+    name: Build Windows 11/10 Setup (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag and version
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          $ver = $tag.TrimStart('v')
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building Windows Setup for tag=$tag (version=$ver)"
+
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Rust formatting, clippy, and unit tests
+        shell: pwsh
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Build Rust Core C-ABI DLL (pc_core_ffi.dll)
+        shell: pwsh
+        run: cargo build --release -p pc-core-ffi
+
+      - name: Build C++23 Virtual Camera COM DLLs (MF + DirectShow)
+        shell: pwsh
+        run: |
+          cmake -S pc-vcam-mf -B pc-vcam-mf/build -A x64
+          cmake --build pc-vcam-mf/build --config Release
+
+          cmake -S pc-vcam-ds -B pc-vcam-ds/build -A x64
+          cmake --build pc-vcam-ds/build --config Release
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build WinUI 3 Desktop Studio App (x64 Release)
+        shell: pwsh
+        run: dotnet build pc-ui/WifiCam.Desktop.csproj -c Release -p:Platform=x64
+
+      - name: Build Inno Setup Windows Installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "/DAppVersion=${{ steps.meta.outputs.version }}" "installer\wificam.iss"
+
+      - name: Package Portable Windows Archive
+        shell: pwsh
+        run: |
+          $stage = "dist\WifiCam-Studio-Windows-x64"
+          New-Item -ItemType Directory -Force -Path "$stage\vcam" | Out-Null
+          Copy-Item -Recurse -Force "pc-ui\bin\x64\Release\net10.0-windows10.0.26100.0\win-x64\*" "$stage\"
+          Copy-Item -Force "pc-vcam-mf\build\Release\pc-vcam-mf.dll" "$stage\vcam\"
+          Copy-Item -Force "pc-vcam-ds\build\Release\pc-vcam-ds.dll" "$stage\vcam\"
+          Copy-Item -Force "installer\register-vcam.ps1" "$stage\"
+          Copy-Item -Force "LICENSE" "$stage\"
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\WifiCam-Studio-${{ steps.meta.outputs.tag }}-Windows-x64-portable.zip" -Force
+
+      - name: Upload Windows Setup & Portable Archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $ver = "${{ steps.meta.outputs.version }}"
+          $setupExe = "installer\Output\WifiCam-Studio-Setup-$ver-x64.exe"
+          $portableZip = "dist\WifiCam-Studio-$tag-Windows-x64-portable.zip"
+
+          $repo = "${{ github.repository }}"
+          $apkName = "WifiCam-$tag-android.apk"
+          $setupUrl = "https://github.com/$repo/releases/download/$tag/WifiCam-Studio-Setup-$ver-x64.exe"
+          $portableUrl = "https://github.com/$repo/releases/download/$tag/WifiCam-Studio-$tag-Windows-x64-portable.zip"
+          $apkUrl = "https://github.com/$repo/releases/download/$tag/$apkName"
+
+          $notesLines = @(
+            "## WifiCam Studio $tag"
+            ""
+            "Open-source, zero-cloud Android-to-PC webcam & studio microphone (1080p60 / 4K30 H.264/HEVC/AV1, 48 kHz Opus/PCM16 audio with RNNoise & WebRTC AEC3, Win11 Media Foundation Virtual Camera, WinUI 3 Mica Studio Console, and instant QR wireless pairing)."
+            ""
+            "### Downloads"
+            "- **Windows 11 / 10 Installer (Recommended):** [``WifiCam-Studio-Setup-$ver-x64.exe``]($setupUrl) — Installs the WinUI 3 Studio Console, Rust core engine (``pc_core_ffi.dll``), registers Windows 11 Media Foundation + Windows 10 DirectShow Virtual Camera COM DLLs, and configures private-network firewall rules (TCP 7890 / UDP 7891)."
+            "- **Windows Portable Zip:** [``WifiCam-Studio-$tag-Windows-x64-portable.zip``]($portableUrl) — Unpacked binaries + ``register-vcam.ps1`` helper."
+            "- **Android Companion App (APK):** [``$apkName``]($apkUrl) — Prebuilt Android APK (Jetpack Compose Material 3, Camera2 + MediaCodec H.264/HEVC/AV1, C++20 Oboe AAudio JNI, zero-Play-Services ZXing QR Scanner Mode, and 0-nit OLED Curtain Mode)."
+            ""
+            "### Quick Start (Fast Wireless QR Pairing)"
+            "1. Install and launch **WifiCam Studio** on Windows 11/10."
+            "2. Download and install [``$apkName``]($apkUrl) on your Android phone (enable *Install unknown apps* if prompted)."
+            "3. Tap the **QR Scanner** icon in the Android app and scan the QR code displayed on the PC console, then tap **Allow & Connect**."
+            "4. *(Optional USB)* Plug in via USB for zero-latency USB AOA or 1-click **USB ADB Link**."
+          )
+
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          $notesFile = "dist\release-notes.md"
+          Set-Content -Path $notesFile -Value ($notesLines -join "`n") -Encoding UTF8
+
+          # Create release if it does not exist yet; otherwise preserve existing assets (e.g. uploaded Android APK) and update notes + Windows artifacts.
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $setupExe $portableZip --title "WifiCam Studio $tag" --notes-file $notesFile
+          } else {
+            gh release upload $tag $setupExe $portableZip --clobber
+            gh release edit $tag --title "WifiCam Studio $tag" --notes-file $notesFile
+          }

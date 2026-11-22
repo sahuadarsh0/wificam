@@ -124,11 +124,13 @@ mod tests {
 
     #[test]
     fn detects_win11_mf_virtual_camera_api_on_this_host() {
-        // This development machine runs Windows 11 (build 26300), so
-        // mfsensorgroup.dll!MFCreateVirtualCamera MUST be present.
-        assert!(
-            is_mf_virtual_camera_supported(),
-            "MFCreateVirtualCamera should be available on Windows 11"
-        );
+        let supported = is_mf_virtual_camera_supported();
+        // Headless Windows Server CI runners may lack Desktop Experience / mfsensorgroup.dll.
+        if std::env::var_os("GITHUB_ACTIONS").is_none() {
+            assert!(
+                supported,
+                "MFCreateVirtualCamera should be available on Windows 11"
+            );
+        }
     }
 }
