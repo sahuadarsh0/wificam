@@ -1,12 +1,20 @@
 //! Lock-free studio audio DSP engine (48 kHz mono, 10 ms frames).
 
+pub mod aec;
 pub mod decoder;
+pub mod denoise;
 pub mod drift_servo;
 pub mod jitter;
+pub mod pipeline;
 
+pub use aec::{AecError, AecProcessor};
 pub use decoder::{AUDIO_SAMPLE_RATE, AudioDecodeError, AudioDecoder, FRAME_SAMPLES_10MS};
+pub use denoise::{DenoiseMode, DenoiserBackend, DenoiserStage, RnNoiseBackend};
 pub use drift_servo::{DriftServoConfig, DriftServoResampler, MAX_DRIFT_RATIO_OFFSET};
 pub use jitter::{AdaptiveJitterBuffer, JitterConfig, JitterPacket, JitterStats, PlayoutAction};
+#[cfg(windows)]
+pub use pipeline::MmcssGuard;
+pub use pipeline::{AudioDspProcessor, AudioSharedState, create_audio_ring};
 
 #[cfg(test)]
 mod tests {
