@@ -1,0 +1,3 @@
+E:/soft/WifiCam/android-app/app/.cxx/Debug/4t5r1573/x86_64/CMakeFiles/wificam_audio.dir
+E:/soft/WifiCam/android-app/app/.cxx/Debug/4t5r1573/x86_64/CMakeFiles/edit_cache.dir
+E:/soft/WifiCam/android-app/app/.cxx/Debug/4t5r1573/x86_64/CMakeFiles/rebuild_cache.dir
