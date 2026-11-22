@@ -8,7 +8,7 @@ Every packet transmitted over USB (AOA / `adb reverse`), Wi-Fi (UDP / TCP), or B
 |---|---|---|---|
 | `0..2` | `u16` | `magic` | Fixed `0x434D` (`"CM"`) |
 | `2` | `u8` | `version` | Fixed `2` |
-| `3` | `u8` | `stream_type` | `1=VideoH264`, `2=VideoH265`, `3=AudioPcm16`, `4=AudioOpus`, `5=Control`, `6=Heartbeat` |
+| `3` | `u8` | `stream_type` | `1=VideoH264`, `2=VideoH265`, `3=AudioPcm16`, `4=AudioOpus`, `5=Control`, `6=Heartbeat`, `7=VideoAv1` |
 | `4..6` | `u16` | `flags` | Bitmask: `0x01=KEYFRAME`, `0x02=CONFIG`, `0x04=HAS_FEC`, `0x08=FRAG_START`, `0x10=FRAG_END`, `0x20=ENCRYPTED`, `0x40=CRC_PRESENT` |
 | `6..10` | `u32` | `seq` | Per-stream monotonic sequence number |
 | `10..18` | `u64` | `pts_us` | Capture timestamp in microseconds |

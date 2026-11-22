@@ -24,6 +24,7 @@ pub struct StreamConfig {
 pub enum VideoCodecChoice {
     H264,
     H265,
+    Av1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

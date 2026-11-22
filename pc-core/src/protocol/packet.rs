@@ -33,6 +33,8 @@ pub enum StreamType {
     Control = 5,
     /// Keepalive & RTT probe heartbeat.
     Heartbeat = 6,
+    /// Open Bitstream Unit (OBU) AV1 video frame (Android 14+ HW encoder -> Win11 AV1 HW decoder).
+    VideoAv1 = 7,
 }
 
 impl StreamType {
@@ -44,6 +46,7 @@ impl StreamType {
             4 => Ok(Self::AudioOpus),
             5 => Ok(Self::Control),
             6 => Ok(Self::Heartbeat),
+            7 => Ok(Self::VideoAv1),
             other => Err(ProtocolError::UnknownStreamType(other)),
         }
     }
@@ -56,7 +59,7 @@ impl StreamType {
 
     /// True if this stream carries compressed video frames.
     pub fn is_video(self) -> bool {
-        matches!(self, Self::VideoH264 | Self::VideoH265)
+        matches!(self, Self::VideoH264 | Self::VideoH265 | Self::VideoAv1)
     }
 }
 
