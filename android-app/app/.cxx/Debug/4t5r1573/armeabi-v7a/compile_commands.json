@@ -1,7 +1,0 @@
-[
-{
-  "directory": "E:/soft/WifiCam/android-app/app/.cxx/Debug/4t5r1573/armeabi-v7a",
-  "command": "E:\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=armv7-none-linux-androideabi26 --sysroot=E:/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dwificam_audio_EXPORTS -isystem C:/Users/Adarsh/.gradle/caches/9.7.1/transforms/e0536609b184d931da1744002371819a/transformed/oboe-1.9.3/prefab/modules/oboe/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -march=armv7-a -mthumb -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -std=gnu++20 -o CMakeFiles\\wificam_audio.dir\\oboe_audio_jni.cpp.o -c E:\\soft\\WifiCam\\android-app\\app\\src\\main\\cpp\\oboe_audio_jni.cpp",
-  "file": "E:\\soft\\WifiCam\\android-app\\app\\src\\main\\cpp\\oboe_audio_jni.cpp"
-}
-]
