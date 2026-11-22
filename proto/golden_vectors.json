@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "vectors": [
+    {
+      "name": "heartbeat_empty",
+      "stream_type": 6,
+      "flags": 0,
+      "seq": 1,
+      "pts_us": 500000,
+      "payload_hex": "",
+      "wire_hex": "434d0206000000000001000000000007a120000000000000"
+    },
+    {
+      "name": "audio_opus_fec_with_crc",
+      "stream_type": 4,
+      "flags": 68,
+      "seq": 42,
+      "pts_us": 1000000,
+      "payload_hex": "01020304",
+      "wire_hex": "434d020400440000002a00000000000f424000000004885d01020304"
+    },
+    {
+      "name": "video_h264_keyframe",
+      "stream_type": 1,
+      "flags": 1,
+      "seq": 100,
+      "pts_us": 33333,
+      "payload_hex": "00000001658884",
+      "wire_hex": "434d0201000100000064000000000000823500000007000000000001658884"
+    }
+  ]
+}
