@@ -1,0 +1,33 @@
+# Rust
+/target
+**/*.rs.bk
+
+# C++ / CMake
+**/build/
+**/out/
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+
+# Android / Gradle
+android-app/.gradle/
+android-app/local.properties
+android-app/**/build/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# IDE / OS
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+Thumbs.db
+Desktop.ini
+
+# Local agent plans/scratch
+.hermes/

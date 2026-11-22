@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = [
+    "pc-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
