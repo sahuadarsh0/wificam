@@ -695,6 +695,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pc-core-ffi"
+version = "0.1.0"
+dependencies = [
+ "pc-core",
+ "serde_json",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

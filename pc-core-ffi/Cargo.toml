@@ -1,0 +1,13 @@
+[package]
+name = "pc-core-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C-ABI DLL bridge exposing pc-core to the Windows 11 WinUI 3 desktop studio app."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pc-core = { path = "../pc-core" }
+serde_json = "1.0"

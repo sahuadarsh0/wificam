@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "pc-core",
+    "pc-core-ffi",
 ]
 
 [workspace.package]
