@@ -70,7 +70,7 @@ class AndroidTransportManager(
     val discoveredHosts: StateFlow<List<DiscoveredHost>> = _discoveredHosts.asStateFlow()
 
     private val highPriorityQueue = LinkedBlockingQueue<WirePacket>(256)
-    private val videoQueue = LinkedBlockingQueue<WirePacket>(64)
+    private val videoQueue = LinkedBlockingQueue<WirePacket>(512)
     private val heartbeatSeq = AtomicInteger(0)
 
     private var txJob: Job? = null
@@ -139,7 +139,7 @@ class AndroidTransportManager(
                     connect(InetSocketAddress(addr, controlPort), 2500)
                 }
                 val udp = DatagramSocket().apply {
-                    sendBufferSize = 1024 * 1024
+                    sendBufferSize = 2 * 1024 * 1024
                 }
                 activeTcp = tcp
                 activeStreamOut = tcp.getOutputStream()

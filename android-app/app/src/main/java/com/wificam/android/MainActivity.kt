@@ -1,6 +1,7 @@
 package com.wificam.android
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
@@ -22,11 +23,13 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.wificam.android.audio.OboeAudioEngine
+import com.wificam.android.core.Brand
 import com.wificam.android.protocol.PairingInfo
 import com.wificam.android.qr.QrPairingScanner
 import com.wificam.android.service.StreamForegroundService
 import com.wificam.android.transport.ActiveTransportTier
 import com.wificam.android.transport.AndroidTransportManager
+import com.wificam.android.ui.PreviewCropMode
 import com.wificam.android.ui.StudioCockpitScreen
 import com.wificam.android.ui.StudioUiState
 import com.wificam.android.ui.VideoQualityPreset
@@ -49,8 +52,42 @@ class MainActivity : ComponentActivity() {
     private var qrImageReader: ImageReader? = null
     private var qrThread: HandlerThread? = null
     private var lastQrScanMs: Long = 0L
+    private var rememberedControlPort: Int = Brand.DEFAULT_CONTROL_PORT
+    private var rememberedUdpPort: Int = Brand.DEFAULT_MEDIA_UDP_PORT
 
     private val uiState = MutableStateFlow(StudioUiState())
+
+    private fun saveRememberedHost(name: String, ip: String, controlPort: Int, udpPort: Int) {
+        rememberedControlPort = controlPort
+        rememberedUdpPort = udpPort
+        getSharedPreferences("wificam_pairing", Context.MODE_PRIVATE).edit()
+            .putString("host_name", name)
+            .putString("host_ip", ip)
+            .putInt("control_port", controlPort)
+            .putInt("udp_port", udpPort)
+            .apply()
+    }
+
+    private fun loadRememberedHost() {
+        val prefs = getSharedPreferences("wificam_pairing", Context.MODE_PRIVATE)
+        val ip = prefs.getString("host_ip", null)?.takeIf { it.isNotBlank() } ?: return
+        val name = prefs.getString("host_name", "Last PC") ?: "Last PC"
+        rememberedControlPort = prefs.getInt("control_port", Brand.DEFAULT_CONTROL_PORT)
+        rememberedUdpPort = prefs.getInt("udp_port", Brand.DEFAULT_MEDIA_UDP_PORT)
+        uiState.update {
+            it.copy(
+                isPaired = true,
+                pairedHostName = name,
+                pairedHostIp = ip,
+            )
+        }
+    }
+
+    private fun clearRememberedHost() {
+        rememberedControlPort = Brand.DEFAULT_CONTROL_PORT
+        rememberedUdpPort = Brand.DEFAULT_MEDIA_UDP_PORT
+        getSharedPreferences("wificam_pairing", Context.MODE_PRIVATE).edit().clear().apply()
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -92,6 +129,7 @@ class MainActivity : ComponentActivity() {
         if (hasPerms) {
             uiState.update { it.copy(lenses = cameraController.discoverLenses()) }
         }
+        loadRememberedHost()
         transportManager.startLanDiscovery()
         handleUsbAccessoryIntent(intent)
 
@@ -144,6 +182,22 @@ class MainActivity : ComponentActivity() {
                         uiState.update { it.copy(antibandingHz = hz) }
                         restartCameraPipeline()
                     },
+                    onRotatePreview = {
+                        uiState.update { it.copy(previewRotationDeg = (it.previewRotationDeg + 90) % 360) }
+                    },
+                    onToggleFlipH = {
+                        uiState.update { it.copy(previewFlipH = !it.previewFlipH) }
+                    },
+                    onToggleFlipV = {
+                        uiState.update { it.copy(previewFlipV = !it.previewFlipV) }
+                    },
+                    onCycleCropMode = {
+                        val all = PreviewCropMode.entries
+                        uiState.update {
+                            val next = all[(all.indexOf(it.previewCropMode) + 1) % all.size]
+                            it.copy(previewCropMode = next)
+                        }
+                    },
                     onOpenSettings = {
                         uiState.update { it.copy(isSettingsOpen = true, isQrScannerOpen = false) }
                     },
@@ -153,6 +207,7 @@ class MainActivity : ComponentActivity() {
                     onUnpair = {
                         stopStreaming()
                         transportManager.disconnect()
+                        clearRememberedHost()
                         uiState.update {
                             it.copy(
                                 isPaired = false,
@@ -160,6 +215,15 @@ class MainActivity : ComponentActivity() {
                                 pairedHostIp = "",
                                 tier = ActiveTransportTier.DISCONNECTED,
                             )
+                        }
+                    },
+                    onQuickReconnect = {
+                        val st = uiState.value
+                        if (st.pairedHostIp.isNotBlank() && st.pairedHostIp != "USB AOA") {
+                            transportManager.connectWifi(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
+                            if (!st.isStreaming) {
+                                startStreaming()
+                            }
                         }
                     },
                     onOpenQrScanner = {
@@ -175,6 +239,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onApproveQrPairing = { info ->
                         stopQrAnalyzer()
+                        saveRememberedHost(info.hostName, info.ip, info.controlPort, info.mediaUdpPort)
                         uiState.update {
                             it.copy(
                                 isQrScannerOpen = false,
@@ -194,6 +259,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onManualIpConnect = { ip ->
                         stopQrAnalyzer()
+                        saveRememberedHost("LAN PC", ip, Brand.DEFAULT_CONTROL_PORT, Brand.DEFAULT_MEDIA_UDP_PORT)
                         uiState.update {
                             it.copy(
                                 isQrScannerOpen = false,
@@ -209,6 +275,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onConnectDiscoveredHost = { host ->
+                        saveRememberedHost(host.name, host.ip, host.controlPort, host.mediaUdpPort)
                         uiState.update {
                             it.copy(
                                 isPaired = true,
@@ -282,11 +349,14 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.startForegroundService(this, Intent(this, StreamForegroundService::class.java))
 
-        if (transportManager.tier.value == ActiveTransportTier.DISCONNECTED) {
-            transportManager.connectUsbAdb()
-        }
-
         val st = uiState.value
+        if (transportManager.tier.value == ActiveTransportTier.DISCONNECTED) {
+            if (st.isPaired && st.pairedHostIp.isNotBlank() && st.pairedHostIp != "USB AOA") {
+                transportManager.connectWifi(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
+            } else {
+                transportManager.connectUsbAdb()
+            }
+        }
         val bitrateKbps = (st.resolution.defaultBitrateKbps * st.quality.multiplier).toInt().coerceAtLeast(500)
         val enc = HardwareVideoEncoder(
             config = VideoEncoderConfig(

@@ -10,6 +10,8 @@
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
+#include <mfcaptureengine.h>
+#include <mfvirtualcamera.h>
 #include <ks.h>
 #include <ksmedia.h>
 #include <ksproxy.h>
@@ -42,13 +44,14 @@ public:
     bool ReadLatest(uint8_t* dst, size_t dst_cap, framebus::FrameSnapshotMeta& out_meta);
 
 private:
+    HANDLE file_ = INVALID_HANDLE_VALUE;
     HANDLE mapping_ = nullptr;
     const void* view_ = nullptr;
 };
 
 class WifiCamMediaSource;
 
-class WifiCamMediaStream final : public IMFMediaStream {
+class WifiCamMediaStream final : public IMFMediaStream2, public IKsControl {
 public:
     static HRESULT CreateInstance(
         WifiCamMediaSource* parent,
@@ -75,6 +78,30 @@ public:
     STDMETHODIMP GetStreamDescriptor(IMFStreamDescriptor** out_desc) override;
     STDMETHODIMP RequestSample(IUnknown* token) override;
 
+    // IMFMediaStream2
+    STDMETHODIMP SetStreamState(MF_STREAM_STATE value) override;
+    STDMETHODIMP GetStreamState(MF_STREAM_STATE* value) override;
+
+    // IKsControl
+    STDMETHODIMP KsProperty(
+        PKSPROPERTY property,
+        ULONG property_length,
+        LPVOID property_data,
+        ULONG data_length,
+        ULONG* bytes_returned) override;
+    STDMETHODIMP KsMethod(
+        PKSMETHOD method,
+        ULONG method_length,
+        LPVOID method_data,
+        ULONG data_length,
+        ULONG* bytes_returned) override;
+    STDMETHODIMP KsEvent(
+        PKSEVENT event,
+        ULONG event_length,
+        LPVOID event_data,
+        ULONG data_length,
+        ULONG* bytes_returned) override;
+
     // Lifecycle controlled by parent WifiCamMediaSource
     HRESULT Start(const PROPVARIANT* start_pos);
     HRESULT Stop();
@@ -91,6 +118,7 @@ private:
     std::mutex lock_;
     bool is_shutdown_ = false;
     bool is_started_ = false;
+    MF_STREAM_STATE stream_state_ = MF_STREAM_STATE_STOPPED;
     uint32_t width_ = 1920;
     uint32_t height_ = 1080;
     uint32_t fps_num_ = 60;
@@ -104,9 +132,14 @@ private:
     std::vector<uint8_t> scratch_;
 };
 
-class WifiCamMediaSource final : public IMFMediaSourceEx, public IKsControl {
+class WifiCamMediaSource final
+    : public IMFMediaSource2,
+      public IMFGetService,
+      public IMFSampleAllocatorControl,
+      public IKsControl {
 public:
     static HRESULT CreateInstance(REFIID riid, void** ppv);
+    static HRESULT CreateInstanceWithAttributes(IMFAttributes* activate_attrs, REFIID riid, void** ppv);
 
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
@@ -139,6 +172,19 @@ public:
     STDMETHODIMP GetStreamAttributes(DWORD stream_id, IMFAttributes** out_attrs) override;
     STDMETHODIMP SetD3DManager(IUnknown* manager) override;
 
+    // IMFMediaSource2
+    STDMETHODIMP SetMediaType(DWORD stream_id, IMFMediaType* media_type) override;
+
+    // IMFGetService
+    STDMETHODIMP GetService(REFGUID guidService, REFIID riid, LPVOID* ppvObject) override;
+
+    // IMFSampleAllocatorControl
+    STDMETHODIMP SetDefaultAllocator(DWORD output_stream_id, IUnknown* allocator) override;
+    STDMETHODIMP GetAllocatorUsage(
+        DWORD output_stream_id,
+        DWORD* input_stream_id,
+        MFSampleAllocatorUsage* usage) override;
+
     // IKsControl (required by Windows 11 Frame Server for KS property queries)
     STDMETHODIMP KsProperty(
         PKSPROPERTY property,
@@ -163,7 +209,7 @@ private:
     WifiCamMediaSource();
     ~WifiCamMediaSource();
 
-    HRESULT Initialize();
+    HRESULT Initialize(IMFAttributes* activate_attrs);
     static HRESULT CreateNv12MediaType(
         uint32_t width,
         uint32_t height,

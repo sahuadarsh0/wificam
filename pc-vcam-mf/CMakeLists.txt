@@ -31,6 +31,7 @@ target_link_libraries(pc-vcam-mf PRIVATE
     mfplat
     mfuuid
     mf
+    mfsensorgroup
     ole32
     advapi32
 )

@@ -19,9 +19,11 @@ public sealed partial class MainWindow : Window
     private readonly StudioEngineClient _engine;
     private readonly DispatcherTimer _telemetryTimer;
     private readonly Border[] _vuSegments = new Border[16];
-    private readonly byte[] _previewBgraBuf = new byte[640 * 480 * 4];
+    private readonly byte[] _previewBgraBuf = new byte[960 * 960 * 4];
     private WriteableBitmap? _previewBitmap;
     private ulong _lastPreviewSeq;
+    private ushort _rotationDeg;
+    private ushort _cropZoomX100 = 100;
     private bool _engineRunning;
     private string _renderedQrUri = "";
 
@@ -40,7 +42,7 @@ public sealed partial class MainWindow : Window
             AppWindow.SetIcon(icoPath);
         }
 
-        AppWindow.Resize(new SizeInt32(1080, 860));
+        AppWindow.Resize(new SizeInt32(1080, 900));
 
         BuildVuMeterSegments();
 
@@ -138,8 +140,9 @@ public sealed partial class MainWindow : Window
         LivePreviewImage.Visibility = hasPreviewPixels ? Visibility.Visible : Visibility.Collapsed;
         ViewportSlateOverlay.Visibility = hasPreviewPixels ? Visibility.Collapsed : Visibility.Visible;
 
-        LanAddressText.Text = $"LAN: {snap.HostIp} • TCP {snap.ControlPort} / UDP {snap.MediaUdpPort}";
-        FingerprintText.Text = $"TOFU FP: {snap.HostFingerprint}";
+        PcNameText.Text = $"PC: {Environment.MachineName}";
+        LanAddressText.Text = $"Address: {snap.HostIp} • TCP {snap.ControlPort} / UDP {snap.MediaUdpPort}";
+        FingerprintText.Text = $"Security ID: {snap.HostFingerprint}";
         VirtualMicStatusText.Text = $"Virtual Mic Sink: {snap.VirtualMicName}";
 
         if (string.IsNullOrEmpty(UsbStatusText.Text) ||
@@ -249,6 +252,38 @@ public sealed partial class MainWindow : Window
     private void OnUsbAdbClick(object sender, RoutedEventArgs e)
     {
         UsbStatusText.Text = _engine.TriggerAdbReverse();
+    }
+
+    private void PushVideoTransform()
+    {
+        bool flipH = FlipHToggle?.IsChecked == true;
+        bool flipV = FlipVToggle?.IsChecked == true;
+        _engine.SetVideoTransform(_rotationDeg, flipH, flipV, _cropZoomX100);
+    }
+
+    private void OnRotateClick(object sender, RoutedEventArgs e)
+    {
+        _rotationDeg = (ushort)((_rotationDeg + 90) % 360);
+        RotateButton.Content = $"Rotate {_rotationDeg}°";
+        PushVideoTransform();
+    }
+
+    private void OnTransformToggleClick(object sender, RoutedEventArgs e)
+    {
+        PushVideoTransform();
+    }
+
+    private void OnCropZoomClick(object sender, RoutedEventArgs e)
+    {
+        _cropZoomX100 = _cropZoomX100 switch
+        {
+            100 => 125,
+            125 => 150,
+            150 => 200,
+            _ => 100,
+        };
+        CropZoomButton.Content = $"Crop {_cropZoomX100 / 100.0:0.##}x";
+        PushVideoTransform();
     }
 
     private void OnDenoiseSelectionChanged(object sender, SelectionChangedEventArgs e)

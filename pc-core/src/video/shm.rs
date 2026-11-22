@@ -143,16 +143,88 @@ unsafe impl Send for FramebusWriter {}
 
 #[cfg(windows)]
 impl FramebusWriter {
-    /// Create the production framebus, trying `Global\WifiCamVcamShm` first
-    /// (required by Windows 11 Frame Server `svchost.exe -k Camera`), and
-    /// falling back to `Local\WifiCamVcamShm` if running without
-    /// `SeCreateGlobalPrivilege`.
+    /// Create the production framebus, trying `Global\WifiCamVcamShm` first,
+    /// then a cross-session file-backed mapping at `C:\ProgramData\WifiCam\framebus.shm`
+    /// (writable by standard users AND readable by Session 0 `Local Service` FrameServer),
+    /// and finally falling back to `Local\WifiCamVcamShm`.
     pub fn create_default() -> Result<Self, FramebusError> {
         let local_shm = VCAM_SHM_GLOBAL_NAME.replace(r"Global\", r"Local\");
         let local_evt = VCAM_EVENT_GLOBAL_NAME.replace(r"Global\", r"Local\");
-        match Self::create_named(VCAM_SHM_GLOBAL_NAME, Some(VCAM_EVENT_GLOBAL_NAME)) {
-            Ok(w) => Ok(w),
-            Err(_) => Self::create_named(&local_shm, Some(&local_evt)),
+        if let Ok(w) = Self::create_named(VCAM_SHM_GLOBAL_NAME, Some(VCAM_EVENT_GLOBAL_NAME)) {
+            return Ok(w);
+        }
+        if let Ok(w) = Self::create_file_backed(r"C:\ProgramData\WifiCam\framebus.shm") {
+            return Ok(w);
+        }
+        Self::create_named(&local_shm, Some(&local_evt))
+    }
+
+    /// Create a cross-session file-backed shared memory framebus readable by
+    /// Windows 11 FrameServer (`Local Service`) without requiring elevation.
+    pub fn create_file_backed(path: &str) -> Result<Self, FramebusError> {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::Memory::{
+            CreateFileMappingW, FILE_MAP_ALL_ACCESS, MapViewOfFile, PAGE_READWRITE,
+        };
+
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .share_mode(0x0000_0001 | 0x0000_0002) // FILE_SHARE_READ | FILE_SHARE_WRITE
+            .open(path)
+            .map_err(|e| FramebusError::Platform(e.to_string()))?;
+        file.set_len(TOTAL_SHM_BYTES as u64)
+            .map_err(|e| FramebusError::Platform(e.to_string()))?;
+
+        let size_u64 = TOTAL_SHM_BYTES as u64;
+        unsafe {
+            let h_file = HANDLE(file.as_raw_handle());
+            let mapping = CreateFileMappingW(
+                h_file,
+                None,
+                PAGE_READWRITE,
+                (size_u64 >> 32) as u32,
+                (size_u64 & 0xFFFF_FFFF) as u32,
+                None,
+            )
+            .map_err(|e| FramebusError::Platform(e.to_string()))?;
+
+            let view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, TOTAL_SHM_BYTES);
+            let Some(base) = NonNull::new(view.Value.cast::<u8>()) else {
+                let _ = CloseHandle(mapping);
+                return Err(FramebusError::Platform(
+                    "MapViewOfFile returned null".into(),
+                ));
+            };
+
+            let hdr = base.as_ptr().cast::<FramebusHeader>();
+            std::ptr::write_bytes(hdr, 0, 1);
+            (*hdr).magic = FRAMEBUS_MAGIC;
+            (*hdr).version = FRAMEBUS_VERSION;
+            (*hdr).seq.store(0, Ordering::Release);
+            (*hdr).active_slot.store(0, Ordering::Release);
+            (*hdr)
+                .state
+                .store(CameraState::Disconnected as u32, Ordering::Release);
+            (*hdr).pixel_format = PixelFormat::Nv12 as u32;
+            (*hdr).fps_num = 60;
+            (*hdr).fps_den = 1;
+
+            Ok(Self {
+                mapping,
+                event: None,
+                base,
+                name: path.to_string(),
+                next_slot: 0,
+            })
         }
     }
 

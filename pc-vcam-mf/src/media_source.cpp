@@ -42,12 +42,34 @@ bool ShmFrameReader::EnsureConnected() {
         mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, framebus::kLocalShmName);
     }
     if (!mapping_) {
+        // Cross-session file-backed fallback readable by Local Service with zero Admin UAC.
+        file_ = CreateFileW(
+            L"C:\\ProgramData\\WifiCam\\framebus.shm",
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (file_ != INVALID_HANDLE_VALUE) {
+            mapping_ = CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+            if (!mapping_) {
+                CloseHandle(file_);
+                file_ = INVALID_HANDLE_VALUE;
+            }
+        }
+    }
+    if (!mapping_) {
         return false;
     }
     view_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, framebus::kTotalShmBytes);
     if (!view_) {
         CloseHandle(mapping_);
         mapping_ = nullptr;
+        if (file_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(file_);
+            file_ = INVALID_HANDLE_VALUE;
+        }
         return false;
     }
     return true;
@@ -61,6 +83,10 @@ void ShmFrameReader::Close() {
     if (mapping_) {
         CloseHandle(mapping_);
         mapping_ = nullptr;
+    }
+    if (file_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(file_);
+        file_ = INVALID_HANDLE_VALUE;
     }
 }
 
@@ -118,8 +144,14 @@ STDMETHODIMP WifiCamMediaStream::QueryInterface(REFIID riid, void** ppv) {
     if (!ppv) {
         return E_POINTER;
     }
-    if (riid == IID_IUnknown || riid == IID_IMFMediaEventGenerator || riid == IID_IMFMediaStream) {
-        *ppv = static_cast<IMFMediaStream*>(this);
+    if (riid == IID_IUnknown || riid == IID_IMFMediaEventGenerator ||
+        riid == IID_IMFMediaStream || riid == IID_IMFMediaStream2) {
+        *ppv = static_cast<IMFMediaStream2*>(this);
+        AddRef();
+        return S_OK;
+    }
+    if (riid == __uuidof(IKsControl)) {
+        *ppv = static_cast<IKsControl*>(this);
         AddRef();
         return S_OK;
     }
@@ -288,9 +320,43 @@ STDMETHODIMP WifiCamMediaStream::RequestSample(IUnknown* token) {
     framebus::FrameSnapshotMeta meta{};
     const bool got_frame = shm_reader_.ReadLatest(scratch_.data(), scratch_.size(), meta);
     if (got_frame && meta.pixel_format == framebus::PixelFormat::Nv12 &&
-        meta.width == width_ && meta.height == height_ &&
-        meta.payload_bytes >= target_nv12_bytes) {
-        std::memcpy(dst_ptr, scratch_.data(), target_nv12_bytes);
+        meta.width > 0 && meta.height > 0 && meta.stride >= meta.width) {
+        if (meta.width == width_ && meta.height == height_ && meta.stride == width_ &&
+            meta.payload_bytes >= target_nv12_bytes) {
+            std::memcpy(dst_ptr, scratch_.data(), target_nv12_bytes);
+        } else {
+            // Fast nearest-neighbor NV12 resize so any phone resolution (360p..4K) fills the virtual camera cleanly.
+            const uint8_t* src_y = scratch_.data();
+            const size_t src_y_bytes = static_cast<size_t>(meta.stride) * meta.height;
+            const uint8_t* src_uv = scratch_.data() + src_y_bytes;
+            uint8_t* dst_y = dst_ptr;
+            uint8_t* dst_uv = dst_ptr + static_cast<size_t>(width_) * height_;
+            if (meta.payload_bytes >= src_y_bytes + static_cast<size_t>(meta.stride) * (meta.height / 2)) {
+                for (uint32_t y = 0; y < height_; ++y) {
+                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * meta.height) / height_);
+                    const uint8_t* srow = src_y + static_cast<size_t>(sy) * meta.stride;
+                    uint8_t* drow = dst_y + static_cast<size_t>(y) * width_;
+                    for (uint32_t x = 0; x < width_; ++x) {
+                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / width_);
+                        drow[x] = srow[sx];
+                    }
+                }
+                const uint32_t uv_h = height_ / 2;
+                const uint32_t src_uv_h = meta.height / 2;
+                for (uint32_t y = 0; y < uv_h; ++y) {
+                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * src_uv_h) / uv_h);
+                    const uint8_t* srow = src_uv + static_cast<size_t>(sy) * meta.stride;
+                    uint8_t* drow = dst_uv + static_cast<size_t>(y) * width_;
+                    for (uint32_t x = 0; x < width_; x += 2) {
+                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / width_) & ~1u;
+                        drow[x] = srow[sx];
+                        drow[x + 1] = srow[sx + 1];
+                    }
+                }
+            } else {
+                FillSlateNv12(dst_ptr, width_, height_);
+            }
+        }
     } else {
         FillSlateNv12(dst_ptr, width_, height_);
     }
@@ -323,6 +389,64 @@ STDMETHODIMP WifiCamMediaStream::RequestSample(IUnknown* token) {
     return event_queue_->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
 }
 
+STDMETHODIMP WifiCamMediaStream::SetStreamState(MF_STREAM_STATE value) {
+    std::lock_guard guard(lock_);
+    if (is_shutdown_) {
+        return MF_E_SHUTDOWN;
+    }
+    stream_state_ = value;
+    is_started_ = (value == MF_STREAM_STATE_RUNNING);
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamMediaStream::GetStreamState(MF_STREAM_STATE* value) {
+    if (!value) {
+        return E_POINTER;
+    }
+    std::lock_guard guard(lock_);
+    if (is_shutdown_) {
+        return MF_E_SHUTDOWN;
+    }
+    *value = stream_state_;
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamMediaStream::KsProperty(
+    PKSPROPERTY /*property*/,
+    ULONG /*property_length*/,
+    LPVOID /*property_data*/,
+    ULONG /*data_length*/,
+    ULONG* bytes_returned) {
+    if (bytes_returned) {
+        *bytes_returned = 0;
+    }
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+STDMETHODIMP WifiCamMediaStream::KsMethod(
+    PKSMETHOD /*method*/,
+    ULONG /*method_length*/,
+    LPVOID /*method_data*/,
+    ULONG /*data_length*/,
+    ULONG* bytes_returned) {
+    if (bytes_returned) {
+        *bytes_returned = 0;
+    }
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+STDMETHODIMP WifiCamMediaStream::KsEvent(
+    PKSEVENT /*event*/,
+    ULONG /*event_length*/,
+    LPVOID /*event_data*/,
+    ULONG /*data_length*/,
+    ULONG* bytes_returned) {
+    if (bytes_returned) {
+        *bytes_returned = 0;
+    }
+    return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
 // ---------------------------------------------------------------------------
 // WifiCamMediaSource
 // ---------------------------------------------------------------------------
@@ -337,6 +461,13 @@ WifiCamMediaSource::~WifiCamMediaSource() {
 }
 
 HRESULT WifiCamMediaSource::CreateInstance(REFIID riid, void** ppv) {
+    return CreateInstanceWithAttributes(nullptr, riid, ppv);
+}
+
+HRESULT WifiCamMediaSource::CreateInstanceWithAttributes(
+    IMFAttributes* activate_attrs,
+    REFIID riid,
+    void** ppv) {
     if (!ppv) {
         return E_POINTER;
     }
@@ -345,7 +476,7 @@ HRESULT WifiCamMediaSource::CreateInstance(REFIID riid, void** ppv) {
     if (!src) {
         return E_OUTOFMEMORY;
     }
-    HRESULT hr = src->Initialize();
+    HRESULT hr = src->Initialize(activate_attrs);
     if (SUCCEEDED(hr)) {
         hr = src->QueryInterface(riid, ppv);
     }
@@ -377,19 +508,51 @@ HRESULT WifiCamMediaSource::CreateNv12MediaType(
     return S_OK;
 }
 
-HRESULT WifiCamMediaSource::Initialize() {
+HRESULT WifiCamMediaSource::Initialize(IMFAttributes* activate_attrs) {
     HRESULT hr = MFCreateEventQueue(&event_queue_);
     if (FAILED(hr)) {
         return hr;
     }
-    hr = MFCreateAttributes(&source_attrs_, 4);
+    hr = MFCreateAttributes(&source_attrs_, 8);
     if (FAILED(hr)) {
         return hr;
     }
-    hr = MFCreateAttributes(&stream_attrs_, 4);
+    if (activate_attrs) {
+        activate_attrs->CopyAllItems(source_attrs_.Get());
+    }
+    source_attrs_->SetGUID(
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+    source_attrs_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kFriendlyName);
+    source_attrs_->SetUINT32(MF_DEVSOURCE_ATTRIBUTE_FRAMESERVER_SHARE_MODE, 1);
+    source_attrs_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
+    source_attrs_->SetGUID(MFT_TRANSFORM_CLSID_Attribute, kClsidWifiCamMfSource);
+    source_attrs_->SetUINT32(MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES, 1);
+
+    // Attach required Windows 11 Camera Sensor Profiles (Legacy <=30fps + HighFrameRate >=60fps).
+    ComPtr<IMFSensorProfileCollection> profiles;
+    if (SUCCEEDED(MFCreateSensorProfileCollection(&profiles))) {
+        ComPtr<IMFSensorProfile> legacy_profile;
+        if (SUCCEEDED(MFCreateSensorProfile(KSCAMERAPROFILE_Legacy, 0, nullptr, &legacy_profile))) {
+            legacy_profile->AddProfileFilter(0, L"((RES==;FRT<=30,1;SUT==))");
+            profiles->AddProfile(legacy_profile.Get());
+        }
+        ComPtr<IMFSensorProfile> hfr_profile;
+        if (SUCCEEDED(MFCreateSensorProfile(KSCAMERAPROFILE_HighFrameRate, 0, nullptr, &hfr_profile))) {
+            hfr_profile->AddProfileFilter(0, L"((RES==;FRT>=60,1;SUT==))");
+            profiles->AddProfile(hfr_profile.Get());
+        }
+        source_attrs_->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, profiles.Get());
+    }
+
+    hr = MFCreateAttributes(&stream_attrs_, 8);
     if (FAILED(hr)) {
         return hr;
     }
+    stream_attrs_->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE);
+    stream_attrs_->SetUINT32(MF_DEVICESTREAM_STREAM_ID, 0);
+    stream_attrs_->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, TRUE);
+    stream_attrs_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
 
     constexpr size_t mode_count = std::size(kSupportedModes);
     IMFMediaType* types[mode_count]{};
@@ -419,6 +582,12 @@ HRESULT WifiCamMediaSource::Initialize() {
         return hr;
     }
 
+    // Windows 11 FrameServer strictly validates these attributes on the StreamDescriptor.
+    stream_desc->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE);
+    stream_desc->SetUINT32(MF_DEVICESTREAM_STREAM_ID, 0);
+    stream_desc->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, TRUE);
+    stream_desc->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
+
     ComPtr<IMFMediaTypeHandler> handler;
     if (SUCCEEDED(stream_desc->GetMediaTypeHandler(&handler))) {
         ComPtr<IMFMediaType> default_type;
@@ -443,8 +612,19 @@ STDMETHODIMP WifiCamMediaSource::QueryInterface(REFIID riid, void** ppv) {
         return E_POINTER;
     }
     if (riid == IID_IUnknown || riid == IID_IMFMediaEventGenerator ||
-        riid == IID_IMFMediaSource || riid == IID_IMFMediaSourceEx) {
-        *ppv = static_cast<IMFMediaSourceEx*>(this);
+        riid == IID_IMFMediaSource || riid == IID_IMFMediaSourceEx ||
+        riid == IID_IMFMediaSource2) {
+        *ppv = static_cast<IMFMediaSource2*>(this);
+        AddRef();
+        return S_OK;
+    }
+    if (riid == IID_IMFGetService) {
+        *ppv = static_cast<IMFGetService*>(this);
+        AddRef();
+        return S_OK;
+    }
+    if (riid == __uuidof(IMFSampleAllocatorControl)) {
+        *ppv = static_cast<IMFSampleAllocatorControl*>(this);
         AddRef();
         return S_OK;
     }
@@ -455,6 +635,42 @@ STDMETHODIMP WifiCamMediaSource::QueryInterface(REFIID riid, void** ppv) {
     }
     *ppv = nullptr;
     return E_NOINTERFACE;
+}
+
+STDMETHODIMP WifiCamMediaSource::SetMediaType(DWORD /*stream_id*/, IMFMediaType* media_type) {
+    if (!media_type) {
+        return E_POINTER;
+    }
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamMediaSource::SetDefaultAllocator(DWORD /*output_stream_id*/, IUnknown* allocator) {
+    if (!allocator) {
+        return E_POINTER;
+    }
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamMediaSource::GetAllocatorUsage(
+    DWORD output_stream_id,
+    DWORD* input_stream_id,
+    MFSampleAllocatorUsage* usage) {
+    if (!input_stream_id || !usage) {
+        return E_POINTER;
+    }
+    *input_stream_id = output_stream_id;
+    *usage = MFSampleAllocatorUsage_UsesCustomAllocator;
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamMediaSource::GetService(
+    REFGUID /*guidService*/,
+    REFIID /*riid*/,
+    LPVOID* ppvObject) {
+    if (ppvObject) {
+        *ppvObject = nullptr;
+    }
+    return MF_E_UNSUPPORTED_SERVICE;
 }
 
 STDMETHODIMP_(ULONG) WifiCamMediaSource::AddRef() {
@@ -548,7 +764,8 @@ STDMETHODIMP WifiCamMediaSource::Start(
     if (FAILED(hr)) {
         return hr;
     }
-    hr = event_queue_->QueueEventParamUnk(MENewStream, GUID_NULL, S_OK, stream_.Get());
+    hr = event_queue_->QueueEventParamUnk(
+        MENewStream, GUID_NULL, S_OK, static_cast<IMFMediaStream2*>(stream_.Get()));
     if (FAILED(hr)) {
         return hr;
     }
@@ -686,12 +903,14 @@ HRESULT WifiCamActivate::CreateInstance(REFIID riid, void** ppv) {
 }
 
 HRESULT WifiCamActivate::Initialize() {
-    HRESULT hr = MFCreateAttributes(&attrs_, 4);
+    HRESULT hr = MFCreateAttributes(&attrs_, 8);
     if (FAILED(hr)) {
         return hr;
     }
     attrs_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
     attrs_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kFriendlyName);
+    attrs_->SetUINT32(MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES, 1);
+    attrs_->SetGUID(MFT_TRANSFORM_CLSID_Attribute, kClsidWifiCamMfSource);
     return S_OK;
 }
 
@@ -729,8 +948,10 @@ STDMETHODIMP WifiCamActivate::ActivateObject(REFIID riid, void** ppv) {
     std::lock_guard guard(lock_);
     if (!source_) {
         ComPtr<IMFMediaSource> created;
-        const HRESULT hr = WifiCamMediaSource::CreateInstance(
-            IID_IMFMediaSource, reinterpret_cast<void**>(created.GetAddressOf()));
+        const HRESULT hr = WifiCamMediaSource::CreateInstanceWithAttributes(
+            attrs_.Get(),
+            IID_IMFMediaSource,
+            reinterpret_cast<void**>(created.GetAddressOf()));
         if (FAILED(hr)) {
             return hr;
         }

@@ -1,11 +1,16 @@
 package com.wificam.android.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -21,7 +27,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -31,24 +38,36 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.wificam.android.protocol.PairingInfo
 import com.wificam.android.ui.theme.StudioTelemetryStyle
 import com.wificam.android.ui.theme.StudioTokens
 
 /**
- * Fast wireless QR pairing overlay sitting directly on top of the live Camera2
- * viewfinder. Pointing the phone at the PC's QR code decodes `wificam://pair?...`
- * locally (zero cloud) and opens the explicit TOFU consent sheet.
+ * Clean, bright cutout QR pairing scanner designed specifically for connecting
+ * this Android phone to WifiCam Studio on a Windows PC.
  */
 @Composable
 fun QrScannerOverlay(
@@ -59,15 +78,80 @@ fun QrScannerOverlay(
     onClose: () -> Unit,
 ) {
     var manualIp by remember { mutableStateOf("") }
+    var showManualEntry by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+
+    LaunchedEffect(pendingConsent) {
+        if (pendingConsent != null) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "qr-scan-beam")
+    val beamFraction by infiniteTransition.animateFloat(
+        initialValue = 0.08f,
+        targetValue = 0.92f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "beam-y",
+    )
 
     BackHandler(onBack = onClose)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(StudioTokens.OledBlack.copy(alpha = 0.58f)),
-    ) {
-        // Top header bar
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 1. Dimmed surround with a crisp transparent square cutout window + animated scan beam
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
+        ) {
+            drawRect(color = Color.Black.copy(alpha = 0.72f))
+
+            val boxSize = 256.dp.toPx()
+            val left = (size.width - boxSize) / 2f
+            val top = (size.height - boxSize) / 2f - 28.dp.toPx()
+
+            // Punch a clean transparent hole so the QR code on the PC screen stays 100% bright & clear
+            drawRoundRect(
+                color = Color.Transparent,
+                topLeft = Offset(left, top),
+                size = Size(boxSize, boxSize),
+                cornerRadius = CornerRadius(20.dp.toPx(), 20.dp.toPx()),
+                blendMode = BlendMode.Clear,
+            )
+
+            // Corner brackets
+            val stroke = 4.dp.toPx()
+            val corner = 30.dp.toPx()
+            val accent = if (pendingConsent != null) StudioTokens.StatusLive else StudioTokens.AccentPrimary
+            val right = left + boxSize
+            val bottom = top + boxSize
+
+            drawLine(accent, Offset(left, top + corner), Offset(left, top), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(left, top), Offset(left + corner, top), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(right - corner, top), Offset(right, top), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(right, top), Offset(right, top + corner), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(left, bottom - corner), Offset(left, bottom), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(left, bottom), Offset(left + corner, bottom), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(right - corner, bottom), Offset(right, bottom), stroke, StrokeCap.Round)
+            drawLine(accent, Offset(right, bottom - corner), Offset(right, bottom), stroke, StrokeCap.Round)
+
+            // Smooth animated scan laser while actively searching
+            if (pendingConsent == null) {
+                val beamY = top + boxSize * beamFraction
+                drawLine(
+                    color = StudioTokens.AccentPrimary.copy(alpha = 0.85f),
+                    start = Offset(left + 16.dp.toPx(), beamY),
+                    end = Offset(right - 16.dp.toPx(), beamY),
+                    strokeWidth = 2.5.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+        }
+
+        // 2. Clean Top Header Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -77,23 +161,40 @@ fun QrScannerOverlay(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Rounded.QrCodeScanner,
-                    contentDescription = null,
-                    tint = StudioTokens.AccentPrimary,
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = "Scan PC Pairing QR",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = StudioTokens.InkPrimary,
-                )
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(StudioTokens.SurfaceCard)
+                        .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Computer,
+                        contentDescription = null,
+                        tint = StudioTokens.AccentPrimary,
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "Connect to Your PC",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = StudioTokens.InkPrimary,
+                    )
+                    Text(
+                        text = "Scan the QR in WifiCam Studio on Windows",
+                        style = StudioTelemetryStyle.copy(fontSize = 11.sp),
+                        color = StudioTokens.InkSecondary,
+                    )
+                }
             }
             IconButton(
                 onClick = onClose,
                 modifier = Modifier
                     .size(44.dp)
-                    .background(StudioTokens.SurfaceCard, RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(StudioTokens.SurfaceCard)
                     .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(12.dp)),
             ) {
                 Icon(
@@ -104,58 +205,47 @@ fun QrScannerOverlay(
             }
         }
 
-        // Center Studio Cyan framing reticle
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(256.dp),
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val stroke = 4.dp.toPx()
-                val corner = 32.dp.toPx()
-                val color = StudioTokens.AccentPrimary
-                val w = size.width
-                val h = size.height
-
-                // Top-left
-                drawLine(color, Offset(0f, corner), Offset(0f, 0f), stroke, StrokeCap.Round)
-                drawLine(color, Offset(0f, 0f), Offset(corner, 0f), stroke, StrokeCap.Round)
-                // Top-right
-                drawLine(color, Offset(w - corner, 0f), Offset(w, 0f), stroke, StrokeCap.Round)
-                drawLine(color, Offset(w, 0f), Offset(w, corner), stroke, StrokeCap.Round)
-                // Bottom-left
-                drawLine(color, Offset(0f, h - corner), Offset(0f, h), stroke, StrokeCap.Round)
-                drawLine(color, Offset(0f, h), Offset(corner, h), stroke, StrokeCap.Round)
-                // Bottom-right
-                drawLine(color, Offset(w - corner, h), Offset(w, h), stroke, StrokeCap.Round)
-                drawLine(color, Offset(w, h - corner), Offset(w, h), stroke, StrokeCap.Round)
-            }
-        }
-
-        // Bottom card: either Explicit TOFU Consent Sheet OR Manual IP fallback
+        // 3. Bottom Sheet: PC Found Consent Card OR Clean Collapsible Manual IP Entry
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(16.dp)
-                .background(StudioTokens.SurfaceElevated, RoundedCornerShape(StudioTokens.RadiusLg))
-                .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusLg))
-                .padding(16.dp),
+                .clip(RoundedCornerShape(20.dp))
+                .background(StudioTokens.SurfaceElevated)
+                .border(
+                    1.dp,
+                    if (pendingConsent != null) StudioTokens.StatusLive.copy(alpha = 0.6f) else StudioTokens.BorderSubtle,
+                    RoundedCornerShape(20.dp),
+                )
+                .padding(18.dp),
         ) {
             if (pendingConsent != null) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Rounded.Computer,
+                            contentDescription = null,
+                            tint = StudioTokens.StatusLive,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "PC Found: ${pendingConsent.hostName}",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = StudioTokens.InkPrimary,
+                            )
+                            Text(
+                                text = "${pendingConsent.ip}:${pendingConsent.controlPort}",
+                                style = StudioTelemetryStyle.copy(fontSize = 12.sp),
+                                color = StudioTokens.AccentPrimary,
+                            )
+                        }
+                    }
                     Text(
-                        text = "Allow PC to connect?",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = StudioTokens.InkPrimary,
-                    )
-                    Text(
-                        text = "${pendingConsent.hostName} (${pendingConsent.ip}:${pendingConsent.controlPort})",
-                        style = StudioTelemetryStyle,
-                        color = StudioTokens.AccentPrimary,
-                    )
-                    Text(
-                        text = "QR code is consent to pair. Tap Allow to begin encrypted LAN video & mic streaming.",
+                        text = "Tap Connect to start encrypted camera & studio microphone streaming to this PC.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = StudioTokens.InkSecondary,
                     )
@@ -165,60 +255,82 @@ fun QrScannerOverlay(
                     ) {
                         OutlinedButton(
                             onClick = onRejectPairing,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
                             shape = RoundedCornerShape(StudioTokens.RadiusMd),
                         ) {
-                            Text("Deny", color = StudioTokens.InkPrimary)
+                            Text("Cancel", color = StudioTokens.InkPrimary)
                         }
                         Button(
                             onClick = { onApprovePairing(pendingConsent) },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(48.dp),
                             shape = RoundedCornerShape(StudioTokens.RadiusMd),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioTokens.AccentPrimary,
                                 contentColor = StudioTokens.InkOnAccent,
                             ),
                         ) {
-                            Text("Allow & Connect")
+                            Text("Connect to PC")
                         }
                     }
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     Text(
-                        text = "Point at the QR code on your Windows 11 PC app, or enter its LAN IP:",
+                        text = "Align the PC QR code inside the frame above",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = StudioTokens.InkSecondary,
+                        color = StudioTokens.InkPrimary,
+                        textAlign = TextAlign.Center,
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = manualIp,
-                            onValueChange = { manualIp = it.trim() },
-                            placeholder = {
-                                Text("192.168.1.42", style = StudioTelemetryStyle, color = StudioTokens.InkSecondary)
-                            },
-                            singleLine = true,
-                            textStyle = StudioTelemetryStyle.copy(color = StudioTokens.InkPrimary),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = StudioTokens.AccentPrimary,
-                                unfocusedBorderColor = StudioTokens.BorderSubtle,
-                            ),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Button(
-                            onClick = { if (manualIp.isNotEmpty()) onManualIpConnect(manualIp) },
-                            shape = RoundedCornerShape(StudioTokens.RadiusMd),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = StudioTokens.AccentPrimary,
-                                contentColor = StudioTokens.InkOnAccent,
-                            ),
-                            modifier = Modifier.height(54.dp),
+                    if (!showManualEntry) {
+                        TextButton(onClick = { showManualEntry = true }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Keyboard,
+                                contentDescription = null,
+                                tint = StudioTokens.AccentPrimary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Enter PC IP manually", color = StudioTokens.AccentPrimary)
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("Connect")
+                            OutlinedTextField(
+                                value = manualIp,
+                                onValueChange = { manualIp = it.trim() },
+                                placeholder = {
+                                    Text("192.168.1.42", style = StudioTelemetryStyle, color = StudioTokens.InkSecondary)
+                                },
+                                singleLine = true,
+                                textStyle = StudioTelemetryStyle.copy(color = StudioTokens.InkPrimary),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = StudioTokens.AccentPrimary,
+                                    unfocusedBorderColor = StudioTokens.BorderSubtle,
+                                ),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Button(
+                                onClick = { if (manualIp.isNotEmpty()) onManualIpConnect(manualIp) },
+                                shape = RoundedCornerShape(StudioTokens.RadiusMd),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioTokens.AccentPrimary,
+                                    contentColor = StudioTokens.InkOnAccent,
+                                ),
+                                modifier = Modifier.height(54.dp),
+                            ) {
+                                Text("Connect")
+                            }
                         }
                     }
                 }

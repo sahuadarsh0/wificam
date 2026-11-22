@@ -80,6 +80,21 @@
                                 </Grid>
                             </Border>
 
+                            <!-- Preview & Virtual Camera Transform Toolbar (Rotate, Flip H, Flip V, Crop/Zoom) -->
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Button x:Name="RotateButton" Grid.Column="0" HorizontalAlignment="Stretch" Content="Rotate 0°" CornerRadius="10" Padding="8,7" FontSize="12" Click="OnRotateClick" />
+                                <ToggleButton x:Name="FlipHToggle" Grid.Column="1" HorizontalAlignment="Stretch" Content="Mirror H" CornerRadius="10" Padding="8,7" FontSize="12" Click="OnTransformToggleClick" />
+                                <ToggleButton x:Name="FlipVToggle" Grid.Column="2" HorizontalAlignment="Stretch" Content="Flip V" CornerRadius="10" Padding="8,7" FontSize="12" Click="OnTransformToggleClick" />
+                                <Button x:Name="CropZoomButton" Grid.Column="3" HorizontalAlignment="Stretch" Content="Crop 1.0x" CornerRadius="10" Padding="8,7" FontSize="12" Click="OnCropZoomClick" />
+                            </Grid>
+
                             <!-- Quick Action Controls -->
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
@@ -142,11 +157,11 @@
                 <!-- RIGHT COLUMN: Fast Wireless QR Pairing, AI Audio DSP & Privacy -->
                 <StackPanel Grid.Column="1" Spacing="16">
 
-                    <!-- Fast Wireless QR Pairing Card -->
+                    <!-- Connect Phone to This PC (QR Code) -->
                     <Border Background="{StaticResource StudioElevatedBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="18" Padding="18">
                         <StackPanel Spacing="12">
-                            <TextBlock Text="Fast Wireless QR Pairing" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource StudioInkPrimaryBrush}" />
-                            <TextBlock Text="Open WifiCam on Android and tap the QR icon to pair over encrypted LAN in under 1 second." FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" TextWrapping="Wrap" />
+                            <TextBlock Text="Connect Phone to This PC" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource StudioInkPrimaryBrush}" />
+                            <TextBlock Text="Open WifiCam on Android and scan this PC pairing code to stream directly to this computer." FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" TextWrapping="Wrap" />
 
                             <Border HorizontalAlignment="Center" Background="#FFFFFF" CornerRadius="14" Padding="10">
                                 <Image x:Name="PairingQrImage" Width="184" Height="184" Stretch="Uniform" />
@@ -154,8 +169,9 @@
 
                             <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,8">
                                 <StackPanel Spacing="4">
-                                    <TextBlock x:Name="LanAddressText" Text="LAN: 127.0.0.1 • TCP 7890 / UDP 7891" FontFamily="Cascadia Mono" FontSize="12" Foreground="{StaticResource StudioAccentBrush}" />
-                                    <TextBlock x:Name="FingerprintText" Text="TOFU FP: ----" FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioInkSecondaryBrush}" />
+                                    <TextBlock x:Name="PcNameText" Text="PC: THIS COMPUTER" FontFamily="Cascadia Mono" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource StudioInkPrimaryBrush}" />
+                                    <TextBlock x:Name="LanAddressText" Text="Address: 127.0.0.1 • TCP 7890 / UDP 7891" FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+                                    <TextBlock x:Name="FingerprintText" Text="Security ID: ----" FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioInkSecondaryBrush}" />
                                 </StackPanel>
                             </Border>
                         </StackPanel>

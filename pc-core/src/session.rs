@@ -3,7 +3,7 @@
 //! Windows session-lock privacy protection.
 
 use std::net::{IpAddr, SocketAddr, UdpSocket as StdUdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -127,6 +127,90 @@ pub fn nv12_to_preview_bgra(
     (dst_w, dst_h)
 }
 
+/// Apply rotation (`0/90/180/270`), horizontal/vertical mirror flip, and
+/// center crop zoom (`100..=250`, where 100 = 1.0x) to an NV12 frame so BOTH
+/// the WinUI 3 live preview and Windows 11 Virtual Camera output reflect it.
+#[allow(clippy::too_many_arguments)]
+pub fn transform_nv12_frame(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    src_stride: u32,
+    rotation_deg: u16,
+    flip_h: bool,
+    flip_v: bool,
+    zoom_x100: u16,
+    dst: &mut Vec<u8>,
+) -> (u32, u32) {
+    let disp_h = if src_h == 1088 { 1080 } else { src_h };
+    let y_bytes = (src_stride as usize).saturating_mul(src_h as usize);
+    let uv_bytes = (src_stride as usize).saturating_mul((src_h as usize) / 2);
+    if src_w < 2 || disp_h < 2 || src.len() < y_bytes + uv_bytes {
+        dst.clear();
+        return (0, 0);
+    }
+
+    let rot = (rotation_deg % 360) / 90 * 90;
+    let swap_dims = rot == 90 || rot == 270;
+    let (out_w, out_h) = if swap_dims {
+        (disp_h & !1, src_w & !1)
+    } else {
+        (src_w & !1, disp_h & !1)
+    };
+    let zoom = zoom_x100.clamp(100, 250) as u64;
+
+    let out_y_bytes = (out_w as usize) * (out_h as usize);
+    let out_uv_bytes = (out_w as usize) * (out_h as usize / 2);
+    dst.resize(out_y_bytes + out_uv_bytes, 128);
+
+    let src_y = &src[..y_bytes];
+    let src_uv = &src[y_bytes..y_bytes + uv_bytes];
+    let (dst_y, dst_uv) = dst.split_at_mut(out_y_bytes);
+
+    let map_xy = |dx: u32, dy: u32| -> (usize, usize) {
+        // Apply center crop zoom in output space first.
+        let zx = (((dx as i64 - (out_w as i64 / 2)) * 100) / zoom as i64 + (out_w as i64 / 2))
+            .clamp(0, (out_w - 1) as i64) as u32;
+        let zy = (((dy as i64 - (out_h as i64 / 2)) * 100) / zoom as i64 + (out_h as i64 / 2))
+            .clamp(0, (out_h - 1) as i64) as u32;
+
+        let fx = if flip_h { out_w - 1 - zx } else { zx };
+        let fy = if flip_v { out_h - 1 - zy } else { zy };
+
+        let (sx, sy) = match rot {
+            90 => (fy, disp_h - 1 - fx.min(disp_h - 1)),
+            180 => (
+                src_w - 1 - fx.min(src_w - 1),
+                disp_h - 1 - fy.min(disp_h - 1),
+            ),
+            270 => (src_w - 1 - fy.min(src_w - 1), fx.min(disp_h - 1)),
+            _ => (fx.min(src_w - 1), fy.min(disp_h - 1)),
+        };
+        (sx as usize, sy as usize)
+    };
+
+    for dy in 0..out_h {
+        let drow = (dy as usize) * (out_w as usize);
+        for dx in 0..out_w {
+            let (sx, sy) = map_xy(dx, dy);
+            dst_y[drow + dx as usize] = src_y[sy * src_stride as usize + sx];
+        }
+    }
+
+    let uv_h = out_h / 2;
+    for dy in 0..uv_h {
+        let drow = (dy as usize) * (out_w as usize);
+        for dx in (0..out_w).step_by(2) {
+            let (sx, sy) = map_xy(dx, dy * 2);
+            let uv_idx = (sy >> 1) * src_stride as usize + (sx & !1);
+            dst_uv[drow + dx as usize] = src_uv[uv_idx];
+            dst_uv[drow + dx as usize + 1] = src_uv[uv_idx + 1];
+        }
+    }
+
+    (out_w, out_h)
+}
+
 /// Best-effort local LAN IPv4 address used inside QR pairing URIs.
 pub fn detect_lan_ipv4() -> String {
     if let Ok(sock) = StdUdpSocket::bind("0.0.0.0:0")
@@ -154,6 +238,10 @@ pub struct StudioEngine {
     vcam_active: Arc<AtomicBool>,
     vcam_status: Arc<Mutex<String>>,
     preview_frame: Arc<Mutex<PreviewFrame>>,
+    rotation_deg: Arc<AtomicU16>,
+    flip_h: Arc<AtomicBool>,
+    flip_v: Arc<AtomicBool>,
+    crop_zoom_x100: Arc<AtomicU16>,
     pairing: PairingPayload,
     host_fingerprint: String,
     virtual_mic_name: String,
@@ -204,6 +292,10 @@ impl StudioEngine {
             vcam_active: Arc::new(AtomicBool::new(false)),
             vcam_status: Arc::new(Mutex::new("Virtual Camera standby".into())),
             preview_frame: Arc::new(Mutex::new(PreviewFrame::default())),
+            rotation_deg: Arc::new(AtomicU16::new(0)),
+            flip_h: Arc::new(AtomicBool::new(false)),
+            flip_v: Arc::new(AtomicBool::new(false)),
+            crop_zoom_x100: Arc::new(AtomicU16::new(100)),
             pairing,
             host_fingerprint,
             virtual_mic_name,
@@ -260,6 +352,10 @@ impl StudioEngine {
         let vcam_active = self.vcam_active.clone();
         let vcam_status = self.vcam_status.clone();
         let preview_frame = self.preview_frame.clone();
+        let rotation_deg = self.rotation_deg.clone();
+        let flip_h = self.flip_h.clone();
+        let flip_v = self.flip_v.clone();
+        let crop_zoom_x100 = self.crop_zoom_x100.clone();
         let ctrl_port = self.pairing.control_port;
         let udp_port = self.pairing.media_udp_port;
 
@@ -284,6 +380,10 @@ impl StudioEngine {
                         vcam_active,
                         vcam_status,
                         preview_frame,
+                        rotation_deg,
+                        flip_h,
+                        flip_v,
+                        crop_zoom_x100,
                         ctrl_port,
                         udp_port,
                     )
@@ -335,6 +435,21 @@ impl StudioEngine {
         self.audio_state
             .gain_db_x10
             .store(gain_db_x10.clamp(-240, 240), Ordering::Relaxed);
+    }
+
+    pub fn set_video_transform(
+        &self,
+        rotation_deg: u16,
+        flip_h: bool,
+        flip_v: bool,
+        crop_zoom_x100: u16,
+    ) {
+        let norm_rot = (rotation_deg % 360) / 90 * 90;
+        self.rotation_deg.store(norm_rot, Ordering::Relaxed);
+        self.flip_h.store(flip_h, Ordering::Relaxed);
+        self.flip_v.store(flip_v, Ordering::Relaxed);
+        self.crop_zoom_x100
+            .store(crop_zoom_x100.clamp(100, 250), Ordering::Relaxed);
     }
 
     /// Trigger `adb reverse tcp:<port> tcp:<port>` for the first online USB
@@ -433,6 +548,10 @@ async fn run_engine_loop(
     vcam_active: Arc<AtomicBool>,
     vcam_status: Arc<Mutex<String>>,
     preview_frame: Arc<Mutex<PreviewFrame>>,
+    rotation_deg: Arc<AtomicU16>,
+    flip_h: Arc<AtomicBool>,
+    flip_v: Arc<AtomicBool>,
+    crop_zoom_x100: Arc<AtomicU16>,
     ctrl_port: u16,
     udp_port: u16,
 ) {
@@ -521,6 +640,10 @@ async fn run_engine_loop(
         &preview_frame,
         &video_width,
         &video_height,
+        &rotation_deg,
+        &flip_h,
+        &flip_v,
+        &crop_zoom_x100,
     );
 
     let mut udp_sock = UdpMediaSocket::bind(SocketAddr::from(([0, 0, 0, 0], udp_port))).ok();
@@ -530,7 +653,9 @@ async fn run_engine_loop(
     let mut reassembler = VideoReassembler::new();
     let mut frame_10ms = [0.0f32; FRAME_SAMPLES_10MS];
     #[cfg(windows)]
-    let mut preview_scratch: Vec<u8> = Vec::with_capacity(640 * 360 * 4);
+    let mut transform_scratch: Vec<u8> = Vec::with_capacity(1920 * 1080 * 3 / 2);
+    #[cfg(windows)]
+    let mut preview_scratch: Vec<u8> = Vec::with_capacity(960 * 540 * 4);
     #[cfg(windows)]
     let mut preview_seq: u64 = 0;
 
@@ -645,30 +770,64 @@ async fn run_engine_loop(
                                     && let Ok(frames) = dec.decode_access_unit(&au.data, au.pts_us)
                                 {
                                     for f in frames {
-                                        let disp_h = if f.height == 1088 { 1080 } else { f.height };
-                                        video_width.store(f.width, Ordering::Relaxed);
-                                        video_height.store(disp_h, Ordering::Relaxed);
+                                        let rot = rotation_deg.load(Ordering::Relaxed);
+                                        let fh = flip_h.load(Ordering::Relaxed);
+                                        let fv = flip_v.load(Ordering::Relaxed);
+                                        let zm = crop_zoom_x100.load(Ordering::Relaxed);
+                                        let needs_tx = rot != 0 || fh || fv || zm > 100;
+
+                                        let (pub_w, pub_h, pub_stride, pub_bytes): (
+                                            u32,
+                                            u32,
+                                            u32,
+                                            &[u8],
+                                        ) = if needs_tx {
+                                            let (tw, th) = transform_nv12_frame(
+                                                &f.nv12_data,
+                                                f.width,
+                                                f.height,
+                                                f.stride,
+                                                rot,
+                                                fh,
+                                                fv,
+                                                zm,
+                                                &mut transform_scratch,
+                                            );
+                                            (tw, th, tw, &transform_scratch)
+                                        } else {
+                                            let dh = if f.height == 1088 { 1080 } else { f.height };
+                                            (f.width, dh, f.stride, &f.nv12_data)
+                                        };
+
+                                        if pub_w == 0 || pub_h == 0 {
+                                            continue;
+                                        }
+
+                                        video_width.store(pub_w, Ordering::Relaxed);
+                                        video_height.store(pub_h, Ordering::Relaxed);
                                         if let Some(ref mut fb) = framebus {
                                             let _ = fb.write_frame(
                                                 FrameDescriptor {
                                                     state: CameraState::Streaming,
-                                                    width: f.width,
-                                                    height: disp_h,
-                                                    stride: f.stride,
+                                                    width: pub_w,
+                                                    height: pub_h,
+                                                    stride: pub_stride,
                                                     pixel_format: PixelFormat::Nv12,
                                                     fps_num: 60,
                                                     fps_den: 1,
                                                     pts_us: f.pts_us,
                                                 },
-                                                &f.nv12_data,
+                                                pub_bytes,
                                             );
                                         }
+                                        let src_h_for_bgra =
+                                            if needs_tx { pub_h } else { f.height };
                                         let (pw, ph) = nv12_to_preview_bgra(
-                                            &f.nv12_data,
-                                            f.width,
-                                            f.height,
-                                            f.stride,
-                                            640,
+                                            pub_bytes,
+                                            pub_w,
+                                            src_h_for_bgra,
+                                            pub_stride,
+                                            960,
                                             &mut preview_scratch,
                                         );
                                         if pw > 0

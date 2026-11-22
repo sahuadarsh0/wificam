@@ -75,6 +75,14 @@ internal static partial class CoreNativeMethods
     internal static partial void wificam_set_gain_db_x10(nint handle, short gainDbX10);
 
     [LibraryImport(DllName)]
+    internal static partial void wificam_set_video_transform(
+        nint handle,
+        ushort rotationDeg,
+        [MarshalAs(UnmanagedType.I1)] bool flipH,
+        [MarshalAs(UnmanagedType.I1)] bool flipV,
+        ushort cropZoomX100);
+
+    [LibraryImport(DllName)]
     internal static unsafe partial nuint wificam_copy_preview_bgra(
         nint handle,
         byte* dstBuf,
@@ -167,6 +175,14 @@ public sealed class StudioEngineClient : IDisposable
     public void SetGainDbX10(short gainDbX10)
     {
         if (_handle != 0) CoreNativeMethods.wificam_set_gain_db_x10(_handle, gainDbX10);
+    }
+
+    public void SetVideoTransform(ushort rotationDeg, bool flipH, bool flipV, ushort cropZoomX100)
+    {
+        if (_handle != 0)
+        {
+            CoreNativeMethods.wificam_set_video_transform(_handle, rotationDeg, flipH, flipV, cropZoomX100);
+        }
     }
 
     public unsafe bool TryCopyPreviewBgra(

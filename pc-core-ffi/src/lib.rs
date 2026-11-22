@@ -191,6 +191,27 @@ pub unsafe extern "C" fn wificam_set_gain_db_x10(
     }
 }
 
+/// Configure real-time video rotation (`0/90/180/270`), mirror flip, and crop zoom (`100..=250`).
+///
+/// # Safety
+/// `handle` must be a valid pointer returned by [`wificam_engine_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wificam_set_video_transform(
+    handle: *const WifiCamEngineHandle,
+    rotation_deg: u16,
+    flip_h: bool,
+    flip_v: bool,
+    crop_zoom_x100: u16,
+) {
+    if !handle.is_null() {
+        unsafe {
+            (*handle)
+                .engine
+                .set_video_transform(rotation_deg, flip_h, flip_v, crop_zoom_x100)
+        };
+    }
+}
+
 /// Copy the latest live BGRA32 preview frame into `dst_buf` if a newer frame
 /// (`seq > last_seq`) is available.
 ///

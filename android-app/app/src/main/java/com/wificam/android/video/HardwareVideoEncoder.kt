@@ -51,6 +51,7 @@ class HardwareVideoEncoder(
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
             )
             setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateKbps * 1000)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_PRIORITY, 0) // Real-time priority
@@ -122,12 +123,14 @@ class HardwareVideoEncoder(
                     }
 
                     val startSeq = seq.get().toUInt()
+                    // Keep UDP fragments <= 1200 bytes (below 1500B Wi-Fi MTU) to eliminate IP fragmentation & macroblock blur.
                     val (frags, nextSeq) = PacketCodec.fragmentVideo(
                         streamType = config.codec.streamType,
                         baseFlags = flags,
                         startSeq = startSeq,
                         ptsUs = info.presentationTimeUs,
                         frame = bytes,
+                        maxChunkSize = 1200,
                     )
                     seq.set(nextSeq.toInt())
                     for (pkt in frags) {
