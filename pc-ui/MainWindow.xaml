@@ -14,7 +14,8 @@
         <!-- Custom Extended Windows 11 Studio Title Bar -->
         <Grid x:Name="AppTitleBar" Grid.Row="0" Padding="18,0" VerticalAlignment="Center">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <Ellipse x:Name="LiveStatusDot" Width="9" Height="9" Fill="{StaticResource StudioInkSecondaryBrush}" />
+                <Image Source="ms-appx:///Assets/wificam-logo.png" Width="22" Height="22" />
+                <Ellipse x:Name="LiveStatusDot" Width="8" Height="8" Fill="{StaticResource StudioInkSecondaryBrush}" />
                 <TextBlock Text="WifiCam Studio" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource StudioInkPrimaryBrush}" />
                 <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="10,3">
                     <TextBlock x:Name="TierBadgeText" Text="STANDBY" FontFamily="Cascadia Mono" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource StudioAccentBrush}" />
@@ -57,16 +58,26 @@
                                         Click="OnStartStopClick" />
                             </Grid>
 
-                            <!-- 16:9 Studio Status Viewport -->
-                            <Border Height="230" Background="#000000" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="12">
-                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-                                    <TextBlock x:Name="ViewportHeadline" Text="Waiting for Android Phone" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioInkPrimaryBrush}" />
-                                    <TextBlock x:Name="ViewportSubtitle" Text="Plug in via USB (AOA / ADB) or scan the QR code on the right for encrypted Wi-Fi" FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="360" TextAlignment="Center" />
-                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="14" Margin="0,8,0,0">
-                                        <TextBlock x:Name="FramesCounterText" Text="VIDEO 0 f" FontFamily="Cascadia Mono" FontSize="12" Foreground="{StaticResource StudioAccentBrush}" />
-                                        <TextBlock x:Name="AudioCounterText" Text="AUDIO 0 pkt" FontFamily="Cascadia Mono" FontSize="12" Foreground="{StaticResource StudioLiveBrush}" />
+                            <!-- 16:9 Live Camera Preview Viewport -->
+                            <Border Height="270" Background="#000000" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="12">
+                                <Grid>
+                                    <!-- Live hardware-decoded BGRA32 camera preview -->
+                                    <Image x:Name="LivePreviewImage" Stretch="Uniform" Visibility="Collapsed" />
+
+                                    <!-- Status Slate Overlay (shown when waiting, paused, or locked) -->
+                                    <StackPanel x:Name="ViewportSlateOverlay" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                                        <TextBlock x:Name="ViewportHeadline" Text="Waiting for Android Phone" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioInkPrimaryBrush}" />
+                                        <TextBlock x:Name="ViewportSubtitle" Text="Plug in via USB (AOA / ADB) or scan the QR code on the right for encrypted Wi-Fi" FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="360" TextAlignment="Center" />
                                     </StackPanel>
-                                </StackPanel>
+
+                                    <!-- Subtle bottom-left live frame/audio telemetry pill -->
+                                    <Border VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="10" Background="#CC0D0F12" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10,4">
+                                        <StackPanel Orientation="Horizontal" Spacing="12">
+                                            <TextBlock x:Name="FramesCounterText" Text="VIDEO 0 f" FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+                                            <TextBlock x:Name="AudioCounterText" Text="AUDIO 0 pkt" FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioLiveBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
                             </Border>
 
                             <!-- Quick Action Controls -->

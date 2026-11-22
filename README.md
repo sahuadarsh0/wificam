@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/wificam-logo-512.png" alt="WifiCam Studio Logo" width="112" />
+</p>
+
 # WifiCam Studio *(working title)*
 
 > **Turn your Android phone into a high-quality Windows 11/10 webcam & studio microphone — 1080p60 / 4K30 hardware H.264/HEVC/AV1 video, 48 kHz studio audio with RNNoise / DeepFilterNet3 AI denoising & WebRTC AEC3 echo cancellation, fast wireless QR pairing, and 4-tier USB/Wi-Fi/Bluetooth failover.**

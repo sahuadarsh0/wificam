@@ -1,5 +1,6 @@
 package com.wificam.android.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +50,8 @@ fun OledCurtainOverlay(
 ) {
     var clockText by remember { mutableStateOf(formatTime()) }
     var driftStep by remember { mutableIntStateOf(0) }
+
+    BackHandler(onBack = onWake)
 
     LaunchedEffect(Unit) {
         while (true) {

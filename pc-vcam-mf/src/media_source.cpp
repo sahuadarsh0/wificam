@@ -655,4 +655,103 @@ STDMETHODIMP WifiCamMediaSource::KsEvent(
     return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
 }
 
+// -----------------------------------------------------------------------------
+// WifiCamActivate (IMFActivate entry point for Windows 11 FrameServer)
+// -----------------------------------------------------------------------------
+
+WifiCamActivate::WifiCamActivate() {
+    g_dll_objects.fetch_add(1, std::memory_order_relaxed);
+}
+
+WifiCamActivate::~WifiCamActivate() {
+    ShutdownObject();
+    g_dll_objects.fetch_sub(1, std::memory_order_relaxed);
+}
+
+HRESULT WifiCamActivate::CreateInstance(REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    *ppv = nullptr;
+    auto* obj = new (std::nothrow) WifiCamActivate();
+    if (!obj) {
+        return E_OUTOFMEMORY;
+    }
+    HRESULT hr = obj->Initialize();
+    if (SUCCEEDED(hr)) {
+        hr = obj->QueryInterface(riid, ppv);
+    }
+    obj->Release();
+    return hr;
+}
+
+HRESULT WifiCamActivate::Initialize() {
+    HRESULT hr = MFCreateAttributes(&attrs_, 4);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    attrs_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+    attrs_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kFriendlyName);
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamActivate::QueryInterface(REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    if (riid == IID_IUnknown || riid == IID_IMFAttributes || riid == IID_IMFActivate) {
+        *ppv = static_cast<IMFActivate*>(this);
+        AddRef();
+        return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+}
+
+STDMETHODIMP_(ULONG) WifiCamActivate::AddRef() {
+    return ref_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+STDMETHODIMP_(ULONG) WifiCamActivate::Release() {
+    const ULONG count = ref_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (count == 0) {
+        delete this;
+    }
+    return count;
+}
+
+STDMETHODIMP WifiCamActivate::ActivateObject(REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    *ppv = nullptr;
+
+    std::lock_guard guard(lock_);
+    if (!source_) {
+        ComPtr<IMFMediaSource> created;
+        const HRESULT hr = WifiCamMediaSource::CreateInstance(
+            IID_IMFMediaSource, reinterpret_cast<void**>(created.GetAddressOf()));
+        if (FAILED(hr)) {
+            return hr;
+        }
+        source_ = created;
+    }
+    return source_->QueryInterface(riid, ppv);
+}
+
+STDMETHODIMP WifiCamActivate::ShutdownObject() {
+    std::lock_guard guard(lock_);
+    if (source_) {
+        source_->Shutdown();
+        source_.Reset();
+    }
+    return S_OK;
+}
+
+STDMETHODIMP WifiCamActivate::DetachObject() {
+    std::lock_guard guard(lock_);
+    source_.Reset();
+    return S_OK;
+}
+
 } // namespace wificam::vcam_mf

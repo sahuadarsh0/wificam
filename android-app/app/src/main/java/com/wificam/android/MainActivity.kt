@@ -25,11 +25,13 @@ import com.wificam.android.audio.OboeAudioEngine
 import com.wificam.android.protocol.PairingInfo
 import com.wificam.android.qr.QrPairingScanner
 import com.wificam.android.service.StreamForegroundService
+import com.wificam.android.transport.ActiveTransportTier
 import com.wificam.android.transport.AndroidTransportManager
 import com.wificam.android.ui.StudioCockpitScreen
 import com.wificam.android.ui.StudioUiState
+import com.wificam.android.ui.VideoQualityPreset
+import com.wificam.android.ui.VideoResolutionPreset
 import com.wificam.android.ui.theme.WifiCamStudioTheme
-import com.wificam.android.video.AndroidVideoCodec
 import com.wificam.android.video.Camera2Controller
 import com.wificam.android.video.HardwareVideoEncoder
 import com.wificam.android.video.VideoEncoderConfig
@@ -71,7 +73,12 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             transportManager.tier.collect { tier ->
-                uiState.update { it.copy(tier = tier) }
+                uiState.update {
+                    it.copy(
+                        tier = tier,
+                        isPaired = it.isPaired || tier != ActiveTransportTier.DISCONNECTED,
+                    )
+                }
             }
         }
         lifecycleScope.launch {
@@ -116,10 +123,49 @@ class MainActivity : ComponentActivity() {
                         uiState.update { it.copy(activeLensId = lensId) }
                         restartCameraPipeline()
                     },
-                    onCycleResolution = ::cycleResolution,
-                    onCycleCodec = ::cycleCodec,
+                    onSelectResolution = { res ->
+                        val adjustedFps = if (res == VideoResolutionPreset.R4K && uiState.value.fps > 30) 30 else uiState.value.fps
+                        uiState.update { it.copy(resolution = res, fps = adjustedFps) }
+                        restartStreamIfActive()
+                    },
+                    onSelectFps = { fps ->
+                        uiState.update { it.copy(fps = fps) }
+                        restartStreamIfActive()
+                    },
+                    onSelectQuality = { quality ->
+                        uiState.update { it.copy(quality = quality) }
+                        restartStreamIfActive()
+                    },
+                    onSelectCodec = { codec ->
+                        uiState.update { it.copy(codec = codec) }
+                        restartStreamIfActive()
+                    },
+                    onSelectAntibanding = { hz ->
+                        uiState.update { it.copy(antibandingHz = hz) }
+                        restartCameraPipeline()
+                    },
+                    onOpenSettings = {
+                        uiState.update { it.copy(isSettingsOpen = true, isQrScannerOpen = false) }
+                    },
+                    onCloseSettings = {
+                        uiState.update { it.copy(isSettingsOpen = false) }
+                    },
+                    onUnpair = {
+                        stopStreaming()
+                        transportManager.disconnect()
+                        uiState.update {
+                            it.copy(
+                                isPaired = false,
+                                pairedHostName = "",
+                                pairedHostIp = "",
+                                tier = ActiveTransportTier.DISCONNECTED,
+                            )
+                        }
+                    },
                     onOpenQrScanner = {
-                        uiState.update { it.copy(isQrScannerOpen = true, pendingConsent = null) }
+                        uiState.update {
+                            it.copy(isQrScannerOpen = true, isSettingsOpen = false, pendingConsent = null)
+                        }
                         startQrAnalyzer()
                     },
                     onCloseQrScanner = {
@@ -129,7 +175,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onApproveQrPairing = { info ->
                         stopQrAnalyzer()
-                        uiState.update { it.copy(isQrScannerOpen = false, pendingConsent = null) }
+                        uiState.update {
+                            it.copy(
+                                isQrScannerOpen = false,
+                                pendingConsent = null,
+                                isPaired = true,
+                                pairedHostName = info.hostName,
+                                pairedHostIp = info.ip,
+                            )
+                        }
                         transportManager.connectFromQrPairing(info)
                         if (!uiState.value.isStreaming) {
                             toggleStreaming()
@@ -140,13 +194,28 @@ class MainActivity : ComponentActivity() {
                     },
                     onManualIpConnect = { ip ->
                         stopQrAnalyzer()
-                        uiState.update { it.copy(isQrScannerOpen = false, pendingConsent = null) }
+                        uiState.update {
+                            it.copy(
+                                isQrScannerOpen = false,
+                                pendingConsent = null,
+                                isPaired = true,
+                                pairedHostName = "LAN PC",
+                                pairedHostIp = ip,
+                            )
+                        }
                         transportManager.connectWifi(ip)
                         if (!uiState.value.isStreaming) {
                             toggleStreaming()
                         }
                     },
                     onConnectDiscoveredHost = { host ->
+                        uiState.update {
+                            it.copy(
+                                isPaired = true,
+                                pairedHostName = host.name,
+                                pairedHostIp = host.ip,
+                            )
+                        }
                         transportManager.connectWifi(host.ip, host.controlPort, host.mediaUdpPort)
                         if (!uiState.value.isStreaming) {
                             toggleStreaming()
@@ -184,6 +253,7 @@ class MainActivity : ComponentActivity() {
             intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
         }
         if (accessory != null && transportManager.connectUsbAccessory(accessory)) {
+            uiState.update { it.copy(isPaired = true, pairedHostName = "USB PC", pairedHostIp = "USB AOA") }
             if (!uiState.value.isStreaming && hasRequiredPermissions()) {
                 toggleStreaming()
             }
@@ -198,6 +268,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun restartStreamIfActive() {
+        if (uiState.value.isStreaming) {
+            stopStreaming()
+            startStreaming()
+        }
+    }
+
     private fun startStreaming() {
         if (!hasRequiredPermissions()) {
             requestRequiredPermissions()
@@ -205,23 +282,18 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.startForegroundService(this, Intent(this, StreamForegroundService::class.java))
 
-        if (transportManager.tier.value == com.wificam.android.transport.ActiveTransportTier.DISCONNECTED) {
-            // Try USB adb reverse automatically when starting without explicit Wi-Fi pairing.
+        if (transportManager.tier.value == ActiveTransportTier.DISCONNECTED) {
             transportManager.connectUsbAdb()
         }
 
         val st = uiState.value
-        val (w, h) = when (st.resolutionLabel) {
-            "4K" -> 3840 to 2160
-            "720p" -> 1280 to 720
-            else -> 1920 to 1080
-        }
+        val bitrateKbps = (st.resolution.defaultBitrateKbps * st.quality.multiplier).toInt().coerceAtLeast(500)
         val enc = HardwareVideoEncoder(
             config = VideoEncoderConfig(
-                width = w,
-                height = h,
+                width = st.resolution.width,
+                height = st.resolution.height,
                 fps = st.fps,
-                bitrateKbps = if (w >= 3840) 24_000 else 14_000,
+                bitrateKbps = bitrateKbps,
                 codec = st.codec,
             ),
             onPacket = transportManager::enqueuePacket,
@@ -315,29 +387,6 @@ class MainActivity : ComponentActivity() {
             )
         }
         restartCameraPipeline()
-    }
-
-    private fun cycleResolution() {
-        val next = when (uiState.value.resolutionLabel) {
-            "720p" -> "1080p" to 60
-            "1080p" -> "4K" to 30
-            else -> "720p" to 60
-        }
-        uiState.update { it.copy(resolutionLabel = next.first, fps = next.second) }
-        if (uiState.value.isStreaming) {
-            stopStreaming()
-            startStreaming()
-        }
-    }
-
-    private fun cycleCodec() {
-        val all = AndroidVideoCodec.entries
-        val next = all[(all.indexOf(uiState.value.codec) + 1) % all.size]
-        uiState.update { it.copy(codec = next) }
-        if (uiState.value.isStreaming) {
-            stopStreaming()
-            startStreaming()
-        }
     }
 
     private fun hasRequiredPermissions(): Boolean {

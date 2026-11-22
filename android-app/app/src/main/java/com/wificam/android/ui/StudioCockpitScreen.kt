@@ -1,5 +1,6 @@
 package com.wificam.android.ui
 
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
@@ -26,7 +27,7 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.QrCodeScanner
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VideocamOff
 import androidx.compose.material3.Button
@@ -39,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -54,9 +56,13 @@ import kotlin.math.roundToInt
 data class StudioUiState(
     val isStreaming: Boolean = false,
     val tier: ActiveTransportTier = ActiveTransportTier.DISCONNECTED,
+    val isPaired: Boolean = false,
+    val pairedHostName: String = "",
+    val pairedHostIp: String = "",
     val lenses: List<CameraLensOption> = listOf(CameraLensOption("0", "1x", false, 4.2f)),
     val activeLensId: String = "0",
-    val resolutionLabel: String = "1080p",
+    val resolution: VideoResolutionPreset = VideoResolutionPreset.R1080P,
+    val quality: VideoQualityPreset = VideoQualityPreset.BALANCED,
     val fps: Int = 60,
     val codec: AndroidVideoCodec = AndroidVideoCodec.H264,
     val isVideoPaused: Boolean = false,
@@ -64,17 +70,43 @@ data class StudioUiState(
     val rmsDbfsX10: Int = -960,
     val isOledCurtainActive: Boolean = false,
     val isQrScannerOpen: Boolean = false,
+    val isSettingsOpen: Boolean = false,
     val pendingConsent: PairingInfo? = null,
     val discoveredHosts: List<DiscoveredHost> = emptyList(),
     val antibandingHz: Int = 50,
     val hasPermissions: Boolean = false,
 )
 
-/**
- * Hardware-instrument camera-first cockpit implementing the WCAG-validated
- * `DESIGN.md` visual system (OLED black canvas, Studio Cyan accent, tabular
- * monospace telemetry, 16-segment LED VU meter, thumb-reachable dock).
- */
+private fun applyCenterCropTransform(
+    textureView: TextureView,
+    viewW: Int,
+    viewH: Int,
+    bufferW: Int,
+    bufferH: Int,
+) {
+    if (viewW <= 0 || viewH <= 0 || bufferW <= 0 || bufferH <= 0) return
+    val isPortraitView = viewH >= viewW
+    val contentW = if (isPortraitView) bufferH.toFloat() else bufferW.toFloat()
+    val contentH = if (isPortraitView) bufferW.toFloat() else bufferH.toFloat()
+
+    val contentAspect = contentW / contentH
+    val viewAspect = viewW.toFloat() / viewH.toFloat()
+
+    val scaleX: Float
+    val scaleY: Float
+    if (contentAspect > viewAspect) {
+        scaleX = contentAspect / viewAspect
+        scaleY = 1f
+    } else {
+        scaleX = 1f
+        scaleY = viewAspect / contentAspect
+    }
+
+    val matrix = Matrix()
+    matrix.setScale(scaleX, scaleY, viewW / 2f, viewH / 2f)
+    textureView.setTransform(matrix)
+}
+
 @Composable
 fun StudioCockpitScreen(
     state: StudioUiState,
@@ -84,8 +116,14 @@ fun StudioCockpitScreen(
     onToggleVideoPause: () -> Unit,
     onToggleMicMute: () -> Unit,
     onSelectLens: (String) -> Unit,
-    onCycleResolution: () -> Unit,
-    onCycleCodec: () -> Unit,
+    onSelectResolution: (VideoResolutionPreset) -> Unit,
+    onSelectFps: (Int) -> Unit,
+    onSelectQuality: (VideoQualityPreset) -> Unit,
+    onSelectCodec: (AndroidVideoCodec) -> Unit,
+    onSelectAntibanding: (Int) -> Unit,
+    onOpenSettings: () -> Unit,
+    onCloseSettings: () -> Unit,
+    onUnpair: () -> Unit,
     onOpenQrScanner: () -> Unit,
     onCloseQrScanner: () -> Unit,
     onApproveQrPairing: (PairingInfo) -> Unit,
@@ -95,12 +133,15 @@ fun StudioCockpitScreen(
     onToggleOledCurtain: () -> Unit,
     onRequestPermissions: () -> Unit,
 ) {
+    val previewBufferW = state.resolution.width.coerceAtMost(1920)
+    val previewBufferH = state.resolution.height.coerceAtMost(1080)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(StudioTokens.OledBlack),
     ) {
-        // 1. Edge-to-edge Camera2 Preview Surface
+        // 1. Distortion-Free Center-Cropped Camera2 Preview Surface
         if (state.hasPermissions) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
@@ -108,10 +149,15 @@ fun StudioCockpitScreen(
                     TextureView(ctx).apply {
                         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                st.setDefaultBufferSize(previewBufferW, previewBufferH)
+                                applyCenterCropTransform(this@apply, w, h, previewBufferW, previewBufferH)
                                 onPreviewSurfaceReady(Surface(st))
                             }
 
-                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                                st.setDefaultBufferSize(previewBufferW, previewBufferH)
+                                applyCenterCropTransform(this@apply, w, h, previewBufferW, previewBufferH)
+                            }
 
                             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                                 onPreviewSurfaceDestroyed()
@@ -122,36 +168,43 @@ fun StudioCockpitScreen(
                         }
                     }
                 },
+                update = { tv ->
+                    if (tv.isAvailable && tv.width > 0 && tv.height > 0) {
+                        tv.surfaceTexture?.setDefaultBufferSize(previewBufferW, previewBufferH)
+                        applyCenterCropTransform(tv, tv.width, tv.height, previewBufferW, previewBufferH)
+                    }
+                },
             )
         } else {
             PermissionGate(onRequestPermissions = onRequestPermissions)
         }
 
-        // 2. Floating Top Telemetry Strip
+        // 2. Spacious 2-Row Floating Top Telemetry HUD
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                TransportTierPill(tier = state.tier, isStreaming = state.isStreaming)
+                PairingStatusPill(
+                    isPaired = state.isPaired,
+                    isStreaming = state.isStreaming,
+                    tier = state.tier,
+                    hostName = state.pairedHostName,
+                    onClick = if (state.isPaired) onOpenSettings else onOpenQrScanner,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TelemetryChip(
-                        text = "${state.resolutionLabel}${state.fps}",
-                        onClick = onCycleResolution,
-                    )
-                    TelemetryChip(
-                        text = state.codec.label,
-                        onClick = onCycleCodec,
-                    )
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TopActionIcon(
                         icon = Icons.Rounded.QrCodeScanner,
                         contentDescription = "Scan PC QR code",
@@ -167,27 +220,50 @@ fun StudioCockpitScreen(
                 }
             }
 
-            // Quick-connect LAN chip when a PC is auto-discovered via mDNS
+            // Compact clickable Video Quality & Codec pill -> opens full Settings Sheet
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(StudioTokens.RadiusMd))
+                    .background(StudioTokens.SurfaceCard.copy(alpha = 0.88f))
+                    .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusMd))
+                    .clickable(onClick = onOpenSettings)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Tune,
+                    contentDescription = null,
+                    tint = StudioTokens.AccentPrimary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = "${state.resolution.label} · ${state.fps}fps · ${state.quality.label} · ${state.codec.label}",
+                    style = StudioTelemetryStyle.copy(fontSize = 12.sp),
+                    color = StudioTokens.InkPrimary,
+                )
+            }
+
             val firstHost = state.discoveredHosts.firstOrNull()
-            if (firstHost != null && !state.isStreaming) {
+            if (firstHost != null && !state.isStreaming && !state.isPaired) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(StudioTokens.RadiusMd))
-                        .background(StudioTokens.SurfaceElevated.copy(alpha = 0.92f))
-                        .border(1.dp, StudioTokens.AccentPrimary.copy(alpha = 0.5f), RoundedCornerShape(StudioTokens.RadiusMd))
+                        .background(StudioTokens.SurfaceElevated.copy(alpha = 0.94f))
+                        .border(1.dp, StudioTokens.AccentPrimary.copy(alpha = 0.55f), RoundedCornerShape(StudioTokens.RadiusMd))
                         .clickable { onConnectDiscoveredHost(firstHost) }
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = "PC Ready: ${firstHost.name}",
+                        text = "PC Found: ${firstHost.name}",
                         style = MaterialTheme.typography.labelMedium,
                         color = StudioTokens.InkPrimary,
                     )
                     Text(
-                        text = "${firstHost.ip} • Tap to pair",
+                        text = "${firstHost.ip} · Tap to pair",
                         style = StudioTelemetryStyle.copy(fontSize = 11.sp),
                         color = StudioTokens.AccentPrimary,
                     )
@@ -195,35 +271,32 @@ fun StudioCockpitScreen(
             }
         }
 
-        // 3. Thumb-Reachable Bottom Studio Control Dock
+        // 3. Spacious Thumb-Reachable Bottom Studio Control Dock
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 14.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
                 .background(StudioTokens.SurfaceElevated.copy(alpha = 0.94f), RoundedCornerShape(StudioTokens.RadiusLg))
                 .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusLg))
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Broadcast 16-segment LED VU Meter
             BroadcastVuMeter16(
                 rmsDbfsX10 = if (state.isMicMuted) -960 else state.rmsDbfsX10,
                 isMuted = state.isMicMuted,
             )
 
-            // Multi-lens optical switcher pills
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 state.lenses.forEach { lens ->
                     val selected = lens.cameraId == state.activeLensId
                     Box(
                         modifier = Modifier
-                            .padding(horizontal = 4.dp)
                             .clip(CircleShape)
                             .background(if (selected) StudioTokens.AccentPrimary else StudioTokens.SurfaceCard)
                             .border(
@@ -232,7 +305,7 @@ fun StudioCockpitScreen(
                                 CircleShape,
                             )
                             .clickable { onSelectLens(lens.cameraId) }
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                     ) {
                         Text(
                             text = lens.label,
@@ -243,11 +316,10 @@ fun StudioCockpitScreen(
                 }
             }
 
-            // Primary action bar: Video Pause | Start/Stop CTA | Mic Mute | QR/Settings
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 DockToggleIcon(
                     active = !state.isVideoPaused,
@@ -262,7 +334,7 @@ fun StudioCockpitScreen(
                     onClick = onToggleStream,
                     modifier = Modifier
                         .weight(1f)
-                        .height(50.dp),
+                        .height(52.dp),
                     shape = RoundedCornerShape(StudioTokens.RadiusMd),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (state.isStreaming) StudioTokens.StatusAlert else StudioTokens.AccentPrimary,
@@ -270,7 +342,7 @@ fun StudioCockpitScreen(
                     ),
                 ) {
                     Text(
-                        text = if (state.isStreaming) "STOP STREAM" else "START STREAM",
+                        text = if (state.isStreaming) "STOP" else "GO LIVE",
                         style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp),
                     )
                 }
@@ -285,23 +357,36 @@ fun StudioCockpitScreen(
                 )
 
                 IconButton(
-                    onClick = onOpenQrScanner,
+                    onClick = onOpenSettings,
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(52.dp)
                         .clip(RoundedCornerShape(StudioTokens.RadiusMd))
                         .background(StudioTokens.SurfaceCard)
                         .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusMd)),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Settings,
-                        contentDescription = "Pair & Settings",
-                        tint = StudioTokens.InkSecondary,
+                        imageVector = Icons.Rounded.Tune,
+                        contentDescription = "Video & Quality Settings",
+                        tint = StudioTokens.InkPrimary,
                     )
                 }
             }
         }
 
-        // 4. Optional Live QR Scanner + TOFU Consent Overlay
+        if (state.isSettingsOpen) {
+            SettingsSheet(
+                state = state,
+                onSelectResolution = onSelectResolution,
+                onSelectFps = onSelectFps,
+                onSelectQuality = onSelectQuality,
+                onSelectCodec = onSelectCodec,
+                onSelectAntibanding = onSelectAntibanding,
+                onOpenQrScanner = onOpenQrScanner,
+                onUnpair = onUnpair,
+                onDismiss = onCloseSettings,
+            )
+        }
+
         if (state.isQrScannerOpen) {
             QrScannerOverlay(
                 pendingConsent = state.pendingConsent,
@@ -312,7 +397,6 @@ fun StudioCockpitScreen(
             )
         }
 
-        // 5. Optional 0-Nit Pure-Black OLED Curtain Overlay
         if (state.isOledCurtainActive) {
             OledCurtainOverlay(
                 tierBadge = state.tier.badge,
@@ -324,49 +408,54 @@ fun StudioCockpitScreen(
 }
 
 @Composable
-private fun TransportTierPill(tier: ActiveTransportTier, isStreaming: Boolean) {
+private fun PairingStatusPill(
+    isPaired: Boolean,
+    isStreaming: Boolean,
+    tier: ActiveTransportTier,
+    hostName: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val dotColor = when {
-        !isStreaming -> StudioTokens.InkSecondary
-        tier == ActiveTransportTier.DISCONNECTED -> StudioTokens.StatusWarn
-        else -> StudioTokens.StatusLive
+        isStreaming && tier != ActiveTransportTier.DISCONNECTED -> StudioTokens.StatusLive
+        isPaired -> StudioTokens.AccentPrimary
+        else -> StudioTokens.StatusWarn
     }
+    val label = when {
+        isStreaming && tier != ActiveTransportTier.DISCONNECTED -> {
+            if (hostName.isNotEmpty()) "LIVE · ${tier.badge} · $hostName" else "LIVE · ${tier.badge}"
+        }
+        isPaired -> if (hostName.isNotEmpty()) "PAIRED · $hostName" else "PAIRED"
+        else -> "NOT PAIRED · Tap QR"
+    }
+    val textColor = when {
+        isStreaming && tier != ActiveTransportTier.DISCONNECTED -> StudioTokens.StatusLive
+        isPaired -> StudioTokens.AccentPrimary
+        else -> StudioTokens.InkPrimary
+    }
+
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(CircleShape)
             .background(StudioTokens.SurfaceCard.copy(alpha = 0.92f))
-            .border(1.dp, StudioTokens.BorderSubtle, CircleShape)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .border(1.dp, dotColor.copy(alpha = 0.55f), CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
+                .size(9.dp)
                 .clip(CircleShape)
                 .background(dotColor),
         )
-        Spacer(modifier = Modifier.width(7.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = if (isStreaming) tier.badge else "STANDBY",
+            text = label,
             style = StudioTelemetryStyle.copy(fontSize = 12.sp),
-            color = if (isStreaming) StudioTokens.StatusLive else StudioTokens.InkPrimary,
-        )
-    }
-}
-
-@Composable
-private fun TelemetryChip(text: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(StudioTokens.RadiusSm))
-            .background(StudioTokens.SurfaceCard.copy(alpha = 0.9f))
-            .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusSm))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 6.dp),
-    ) {
-        Text(
-            text = text,
-            style = StudioTelemetryStyle.copy(fontSize = 12.sp),
-            color = StudioTokens.InkPrimary,
+            color = textColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -381,12 +470,12 @@ private fun TopActionIcon(
     IconButton(
         onClick = onClick,
         modifier = Modifier
-            .size(34.dp)
-            .clip(RoundedCornerShape(StudioTokens.RadiusSm))
-            .background(StudioTokens.SurfaceCard.copy(alpha = 0.9f))
-            .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusSm)),
+            .size(44.dp)
+            .clip(RoundedCornerShape(StudioTokens.RadiusMd))
+            .background(StudioTokens.SurfaceCard.copy(alpha = 0.92f))
+            .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusMd)),
     ) {
-        Icon(imageVector = icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(18.dp))
+        Icon(imageVector = icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(22.dp))
     }
 }
 
@@ -402,7 +491,7 @@ private fun DockToggleIcon(
     IconButton(
         onClick = onClick,
         modifier = Modifier
-            .size(48.dp)
+            .size(52.dp)
             .clip(RoundedCornerShape(StudioTokens.RadiusMd))
             .background(if (active) StudioTokens.SurfaceCard else inactiveTint.copy(alpha = 0.18f))
             .border(

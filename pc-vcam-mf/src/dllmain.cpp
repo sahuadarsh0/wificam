@@ -44,6 +44,9 @@ public:
         if (outer != nullptr) {
             return CLASS_E_NOAGGREGATION;
         }
+        if (riid == IID_IMFActivate || riid == IID_IMFAttributes || riid == IID_IUnknown) {
+            return WifiCamActivate::CreateInstance(riid, ppv);
+        }
         return WifiCamMediaSource::CreateInstance(riid, ppv);
     }
 

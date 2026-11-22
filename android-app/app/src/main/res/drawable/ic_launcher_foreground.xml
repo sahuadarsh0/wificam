@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:scaleX="0.68"
+        android:scaleY="0.68"
+        android:pivotX="256"
+        android:pivotY="256">
+        <!-- Broadcast wireless arcs -->
+        <path
+            android:pathData="M307,82 A148,148 0 0,1 432,203"
+            android:strokeColor="#38BDF8"
+            android:strokeWidth="22"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M301,125 A104,104 0 0,1 388,210"
+            android:strokeColor="#7DD3FC"
+            android:strokeWidth="18"
+            android:strokeLineCap="round" />
+        <!-- Outer cinema lens bezel -->
+        <path
+            android:fillColor="#0D121A"
+            android:strokeColor="#38BDF8"
+            android:strokeWidth="22"
+            android:pathData="M236,146 A132,132 0 1,1 235.9,146 Z" />
+        <!-- Optical glass -->
+        <path
+            android:fillColor="#102C46"
+            android:pathData="M236,184 A94,94 0 1,1 235.9,184 Z" />
+        <!-- Aperture core -->
+        <path
+            android:fillColor="#050A10"
+            android:strokeColor="#38BDF8"
+            android:strokeWidth="12"
+            android:pathData="M236,236 A42,42 0 1,1 235.9,236 Z" />
+        <!-- Specular highlight -->
+        <path
+            android:fillColor="#E0F2FE"
+            android:pathData="M205,230 A17,17 0 1,1 204.9,230 Z" />
+        <!-- Emerald live tally LED -->
+        <path
+            android:fillColor="#22C55E"
+            android:pathData="M122,114 A18,18 0 1,1 121.9,114 Z" />
+    </group>
+</vector>

@@ -24,6 +24,8 @@ public sealed class StudioTelemetry
     [JsonPropertyName("video_frames_rx")] public ulong VideoFramesRx { get; set; }
     [JsonPropertyName("audio_packets_rx")] public ulong AudioPacketsRx { get; set; }
     [JsonPropertyName("mf_vcam_supported")] public bool MfVcamSupported { get; set; }
+    [JsonPropertyName("vcam_active")] public bool VcamActive { get; set; }
+    [JsonPropertyName("vcam_status")] public string VcamStatus { get; set; } = "";
     [JsonPropertyName("host_ip")] public string HostIp { get; set; } = "127.0.0.1";
     [JsonPropertyName("control_port")] public ushort ControlPort { get; set; } = 7890;
     [JsonPropertyName("media_udp_port")] public ushort MediaUdpPort { get; set; } = 7891;
@@ -71,6 +73,16 @@ internal static partial class CoreNativeMethods
 
     [LibraryImport(DllName)]
     internal static partial void wificam_set_gain_db_x10(nint handle, short gainDbX10);
+
+    [LibraryImport(DllName)]
+    internal static unsafe partial nuint wificam_copy_preview_bgra(
+        nint handle,
+        byte* dstBuf,
+        nuint dstCap,
+        ulong lastSeq,
+        out uint outW,
+        out uint outH,
+        out ulong outSeq);
 
     [LibraryImport(DllName)]
     internal static partial void wificam_free_string(nint ptr);
@@ -155,6 +167,39 @@ public sealed class StudioEngineClient : IDisposable
     public void SetGainDbX10(short gainDbX10)
     {
         if (_handle != 0) CoreNativeMethods.wificam_set_gain_db_x10(_handle, gainDbX10);
+    }
+
+    public unsafe bool TryCopyPreviewBgra(
+        byte[] buffer,
+        ulong lastSeq,
+        out int width,
+        out int height,
+        out ulong seq,
+        out int bytesCopied)
+    {
+        width = 0;
+        height = 0;
+        seq = lastSeq;
+        bytesCopied = 0;
+        if (_handle == 0 || buffer.Length == 0) return false;
+
+        fixed (byte* ptr = buffer)
+        {
+            nuint copied = CoreNativeMethods.wificam_copy_preview_bgra(
+                _handle,
+                ptr,
+                (nuint)buffer.Length,
+                lastSeq,
+                out uint w,
+                out uint h,
+                out ulong s);
+            if (copied == 0) return false;
+            width = (int)w;
+            height = (int)h;
+            seq = s;
+            bytesCopied = (int)copied;
+            return true;
+        }
     }
 
     public void Dispose()

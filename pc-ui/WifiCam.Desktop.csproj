@@ -5,6 +5,7 @@
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>WifiCam.Desktop</RootNamespace>
     <AssemblyName>WifiCam.Desktop</AssemblyName>
+    <ApplicationIcon>Assets\wificam.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
@@ -22,6 +23,15 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.7.0" />
     <PackageReference Include="QRCoder" Version="1.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\wificam.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\wificam-logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <!-- Bundle the Rust pc_core_ffi.dll alongside WifiCam.Desktop.exe -->

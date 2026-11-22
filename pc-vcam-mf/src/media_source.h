@@ -182,4 +182,64 @@ private:
     Microsoft::WRL::ComPtr<WifiCamMediaStream> stream_;
 };
 
+/// COM `IMFActivate` entry point instantiated by Windows 11 FrameServer
+/// (`MFCreateVirtualCamera`) before calling `ActivateObject(IID_IMFMediaSource)`.
+class WifiCamActivate final : public IMFActivate {
+public:
+    static HRESULT CreateInstance(REFIID riid, void** ppv);
+
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
+    STDMETHODIMP_(ULONG) AddRef() override;
+    STDMETHODIMP_(ULONG) Release() override;
+
+    // IMFAttributes (delegated to inner MFCreateAttributes store)
+    STDMETHODIMP GetItem(REFGUID guidKey, PROPVARIANT* pValue) override { return attrs_->GetItem(guidKey, pValue); }
+    STDMETHODIMP GetItemType(REFGUID guidKey, MF_ATTRIBUTE_TYPE* pType) override { return attrs_->GetItemType(guidKey, pType); }
+    STDMETHODIMP CompareItem(REFGUID guidKey, REFPROPVARIANT Value, BOOL* pbResult) override { return attrs_->CompareItem(guidKey, Value, pbResult); }
+    STDMETHODIMP Compare(IMFAttributes* pTheirs, MF_ATTRIBUTES_MATCH_TYPE MatchType, BOOL* pbResult) override { return attrs_->Compare(pTheirs, MatchType, pbResult); }
+    STDMETHODIMP GetUINT32(REFGUID guidKey, UINT32* punValue) override { return attrs_->GetUINT32(guidKey, punValue); }
+    STDMETHODIMP GetUINT64(REFGUID guidKey, UINT64* punValue) override { return attrs_->GetUINT64(guidKey, punValue); }
+    STDMETHODIMP GetDouble(REFGUID guidKey, double* pfValue) override { return attrs_->GetDouble(guidKey, pfValue); }
+    STDMETHODIMP GetGUID(REFGUID guidKey, GUID* pguidValue) override { return attrs_->GetGUID(guidKey, pguidValue); }
+    STDMETHODIMP GetStringLength(REFGUID guidKey, UINT32* pcchLength) override { return attrs_->GetStringLength(guidKey, pcchLength); }
+    STDMETHODIMP GetString(REFGUID guidKey, LPWSTR pwszValue, UINT32 cchBufSize, UINT32* pcchLength) override { return attrs_->GetString(guidKey, pwszValue, cchBufSize, pcchLength); }
+    STDMETHODIMP GetAllocatedString(REFGUID guidKey, LPWSTR* ppwszValue, UINT32* pcchLength) override { return attrs_->GetAllocatedString(guidKey, ppwszValue, pcchLength); }
+    STDMETHODIMP GetBlobSize(REFGUID guidKey, UINT32* pcbBlobSize) override { return attrs_->GetBlobSize(guidKey, pcbBlobSize); }
+    STDMETHODIMP GetBlob(REFGUID guidKey, UINT8* pBuf, UINT32 cbBufSize, UINT32* pcbBlobSize) override { return attrs_->GetBlob(guidKey, pBuf, cbBufSize, pcbBlobSize); }
+    STDMETHODIMP GetAllocatedBlob(REFGUID guidKey, UINT8** ppBuf, UINT32* pcbSize) override { return attrs_->GetAllocatedBlob(guidKey, ppBuf, pcbSize); }
+    STDMETHODIMP GetUnknown(REFGUID guidKey, REFIID riid, LPVOID* ppv) override { return attrs_->GetUnknown(guidKey, riid, ppv); }
+    STDMETHODIMP SetItem(REFGUID guidKey, REFPROPVARIANT Value) override { return attrs_->SetItem(guidKey, Value); }
+    STDMETHODIMP DeleteItem(REFGUID guidKey) override { return attrs_->DeleteItem(guidKey); }
+    STDMETHODIMP DeleteAllItems() override { return attrs_->DeleteAllItems(); }
+    STDMETHODIMP SetUINT32(REFGUID guidKey, UINT32 unValue) override { return attrs_->SetUINT32(guidKey, unValue); }
+    STDMETHODIMP SetUINT64(REFGUID guidKey, UINT64 unValue) override { return attrs_->SetUINT64(guidKey, unValue); }
+    STDMETHODIMP SetDouble(REFGUID guidKey, double fValue) override { return attrs_->SetDouble(guidKey, fValue); }
+    STDMETHODIMP SetGUID(REFGUID guidKey, REFGUID guidValue) override { return attrs_->SetGUID(guidKey, guidValue); }
+    STDMETHODIMP SetString(REFGUID guidKey, LPCWSTR wszValue) override { return attrs_->SetString(guidKey, wszValue); }
+    STDMETHODIMP SetBlob(REFGUID guidKey, const UINT8* pBuf, UINT32 cbBufSize) override { return attrs_->SetBlob(guidKey, pBuf, cbBufSize); }
+    STDMETHODIMP SetUnknown(REFGUID guidKey, IUnknown* pUnknown) override { return attrs_->SetUnknown(guidKey, pUnknown); }
+    STDMETHODIMP LockStore() override { return attrs_->LockStore(); }
+    STDMETHODIMP UnlockStore() override { return attrs_->UnlockStore(); }
+    STDMETHODIMP GetCount(UINT32* pcItems) override { return attrs_->GetCount(pcItems); }
+    STDMETHODIMP GetItemByIndex(UINT32 unIndex, GUID* pguidKey, PROPVARIANT* pValue) override { return attrs_->GetItemByIndex(unIndex, pguidKey, pValue); }
+    STDMETHODIMP CopyAllItems(IMFAttributes* pDest) override { return attrs_->CopyAllItems(pDest); }
+
+    // IMFActivate
+    STDMETHODIMP ActivateObject(REFIID riid, void** ppv) override;
+    STDMETHODIMP ShutdownObject() override;
+    STDMETHODIMP DetachObject() override;
+
+private:
+    WifiCamActivate();
+    ~WifiCamActivate();
+
+    HRESULT Initialize();
+
+    std::atomic<ULONG> ref_count_{1};
+    std::mutex lock_;
+    Microsoft::WRL::ComPtr<IMFAttributes> attrs_;
+    Microsoft::WRL::ComPtr<IMFMediaSource> source_;
+};
+
 } // namespace wificam::vcam_mf

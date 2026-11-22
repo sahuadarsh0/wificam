@@ -191,6 +191,48 @@ pub unsafe extern "C" fn wificam_set_gain_db_x10(
     }
 }
 
+/// Copy the latest live BGRA32 preview frame into `dst_buf` if a newer frame
+/// (`seq > last_seq`) is available.
+///
+/// Returns the number of bytes copied (`> 0`), or `0` if no newer frame is ready.
+///
+/// # Safety
+/// `handle` must be valid, `dst_buf` must point to at least `dst_cap` writable bytes,
+/// and `out_w`/`out_h`/`out_seq` must be valid writable pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wificam_copy_preview_bgra(
+    handle: *const WifiCamEngineHandle,
+    dst_buf: *mut u8,
+    dst_cap: usize,
+    last_seq: u64,
+    out_w: *mut u32,
+    out_h: *mut u32,
+    out_seq: *mut u64,
+) -> usize {
+    if handle.is_null()
+        || dst_buf.is_null()
+        || out_w.is_null()
+        || out_h.is_null()
+        || out_seq.is_null()
+        || dst_cap == 0
+    {
+        return 0;
+    }
+    let h = unsafe { &*handle };
+    let dst = unsafe { std::slice::from_raw_parts_mut(dst_buf, dst_cap) };
+    match h.engine.copy_preview_bgra(dst, last_seq) {
+        Some((w, h_px, seq, n)) => {
+            unsafe {
+                *out_w = w;
+                *out_h = h_px;
+                *out_seq = seq;
+            }
+            n
+        }
+        None => 0,
+    }
+}
+
 /// Free a UTF-8 C string previously returned by this DLL.
 ///
 /// # Safety

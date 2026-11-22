@@ -25,6 +25,8 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 OutputBaseFilename=WifiCam-Studio-Setup-{#AppVersion}-x64
+SetupIconFile=..\pc-ui\Assets\wificam.ico
+UninstallDisplayIcon={app}\{#AppExeName}
 LicenseFile=..\LICENSE
 
 [Files]

@@ -1,8 +1,11 @@
 package com.wificam.android.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +60,8 @@ fun QrScannerOverlay(
 ) {
     var manualIp by remember { mutableStateOf("") }
 
+    BackHandler(onBack = onClose)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -67,7 +72,7 @@ fun QrScannerOverlay(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -77,14 +82,20 @@ fun QrScannerOverlay(
                     contentDescription = null,
                     tint = StudioTokens.AccentPrimary,
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(10.dp))
                 Text(
                     text = "Scan PC Pairing QR",
                     style = MaterialTheme.typography.titleMedium,
                     color = StudioTokens.InkPrimary,
                 )
             }
-            IconButton(onClick = onClose) {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(StudioTokens.SurfaceCard, RoundedCornerShape(12.dp))
+                    .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(12.dp)),
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
                     contentDescription = "Close scanner",

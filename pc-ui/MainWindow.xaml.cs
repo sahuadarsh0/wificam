@@ -19,6 +19,9 @@ public sealed partial class MainWindow : Window
     private readonly StudioEngineClient _engine;
     private readonly DispatcherTimer _telemetryTimer;
     private readonly Border[] _vuSegments = new Border[16];
+    private readonly byte[] _previewBgraBuf = new byte[640 * 480 * 4];
+    private WriteableBitmap? _previewBitmap;
+    private ulong _lastPreviewSeq;
     private bool _engineRunning;
     private string _renderedQrUri = "";
 
@@ -26,12 +29,18 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // Native Windows 11 Mica backdrop + extended title bar
+        // Native Windows 11 Mica backdrop + extended title bar + branded icon
         SystemBackdrop = new MicaBackdrop();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.Resize(new SizeInt32(1080, 840));
+        var icoPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "wificam.ico");
+        if (System.IO.File.Exists(icoPath))
+        {
+            AppWindow.SetIcon(icoPath);
+        }
+
+        AppWindow.Resize(new SizeInt32(1080, 860));
 
         BuildVuMeterSegments();
 
@@ -40,7 +49,7 @@ public sealed partial class MainWindow : Window
 
         _telemetryTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(50), // 20 Hz crisp VU + telemetry refresh
+            Interval = TimeSpan.FromMilliseconds(33), // 30 Hz live video preview + crisp VU refresh
         };
         _telemetryTimer.Tick += (_, _) => RefreshTelemetry();
         _telemetryTimer.Start();
@@ -102,15 +111,55 @@ public sealed partial class MainWindow : Window
                     ? "Streaming Live to Virtual Camera"
                     : "Waiting for Android Phone";
 
+        // Update live hardware-decoded video preview bitmap
+        bool showLivePreview = snap.Running && !snap.VideoPaused && !snap.SessionLocked && snap.VideoFramesRx > 0;
+        if (showLivePreview && _engine.TryCopyPreviewBgra(
+                _previewBgraBuf,
+                _lastPreviewSeq,
+                out int pw,
+                out int ph,
+                out ulong nextSeq,
+                out int bytesCopied))
+        {
+            _lastPreviewSeq = nextSeq;
+            if (_previewBitmap == null || _previewBitmap.PixelWidth != pw || _previewBitmap.PixelHeight != ph)
+            {
+                _previewBitmap = new WriteableBitmap(pw, ph);
+                LivePreviewImage.Source = _previewBitmap;
+            }
+            using (var pixelStream = _previewBitmap.PixelBuffer.AsStream())
+            {
+                pixelStream.Write(_previewBgraBuf, 0, bytesCopied);
+            }
+            _previewBitmap.Invalidate();
+        }
+
+        bool hasPreviewPixels = showLivePreview && _previewBitmap != null && _lastPreviewSeq > 0;
+        LivePreviewImage.Visibility = hasPreviewPixels ? Visibility.Visible : Visibility.Collapsed;
+        ViewportSlateOverlay.Visibility = hasPreviewPixels ? Visibility.Collapsed : Visibility.Visible;
+
         LanAddressText.Text = $"LAN: {snap.HostIp} • TCP {snap.ControlPort} / UDP {snap.MediaUdpPort}";
         FingerprintText.Text = $"TOFU FP: {snap.HostFingerprint}";
         VirtualMicStatusText.Text = $"Virtual Mic Sink: {snap.VirtualMicName}";
 
-        if (string.IsNullOrEmpty(UsbStatusText.Text) || UsbStatusText.Text.StartsWith("Virtual Camera"))
+        if (string.IsNullOrEmpty(UsbStatusText.Text) ||
+            UsbStatusText.Text.StartsWith("Virtual Camera") ||
+            UsbStatusText.Text.StartsWith("Active in Apps:"))
         {
-            UsbStatusText.Text = snap.MfVcamSupported
-                ? "Virtual Camera: Win11 Media Foundation (MFCreateVirtualCamera Ready)"
-                : "Virtual Camera: Win10 DirectShow Fallback Ready";
+            if (!string.IsNullOrEmpty(snap.VcamStatus))
+            {
+                UsbStatusText.Text = snap.VcamStatus;
+                UsbStatusText.Foreground = new SolidColorBrush(
+                    snap.VcamActive
+                        ? Color.FromArgb(255, 34, 197, 94)
+                        : Color.FromArgb(255, 245, 158, 11));
+            }
+            else
+            {
+                UsbStatusText.Text = snap.MfVcamSupported
+                    ? "Virtual Camera: Win11 Media Foundation (MFCreateVirtualCamera Ready)"
+                    : "Virtual Camera: Win10 DirectShow Fallback Ready";
+            }
         }
 
         // Update 16-segment Broadcast LED VU meter
