@@ -1,0 +1,6 @@
+LIBRARY "pc-vcam-ds"
+EXPORTS
+    DllCanUnloadNow     PRIVATE
+    DllGetClassObject   PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE
