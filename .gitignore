@@ -21,6 +21,10 @@ android-app/**/.cxx/
 *.keystore
 *.jks
 
+# .NET / WinUI 3
+pc-ui/bin/
+pc-ui/obj/
+
 # IDE / OS
 .idea/
 .vscode/
