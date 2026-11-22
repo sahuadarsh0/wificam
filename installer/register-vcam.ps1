@@ -14,10 +14,10 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $InstallDir = Join-Path $env:ProgramFiles "WifiCam\vcam"
 
-$MfSrc = Join-Path $RepoRoot "pc-vcam-mf\build\Release\wificam_vcam_mf.dll"
-$DsSrc = Join-Path $RepoRoot "pc-vcam-ds\build\Release\wificam_vcam_ds.dll"
-$MfDst = Join-Path $InstallDir "wificam_vcam_mf.dll"
-$DsDst = Join-Path $InstallDir "wificam_vcam_ds.dll"
+$MfSrc = Join-Path $RepoRoot "pc-vcam-mf\build\Release\pc-vcam-mf.dll"
+$DsSrc = Join-Path $RepoRoot "pc-vcam-ds\build\Release\pc-vcam-ds.dll"
+$MfDst = Join-Path $InstallDir "pc-vcam-mf.dll"
+$DsDst = Join-Path $InstallDir "pc-vcam-ds.dll"
 
 if ($Unregister) {
     if (Test-Path $MfDst) { & regsvr32.exe /s /u "$MfDst" }
