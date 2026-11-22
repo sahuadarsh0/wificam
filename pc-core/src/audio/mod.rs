@@ -6,6 +6,8 @@ pub mod denoise;
 pub mod drift_servo;
 pub mod jitter;
 pub mod pipeline;
+pub mod wasapi_loopback;
+pub mod wasapi_sink;
 
 pub use aec::{AecError, AecProcessor};
 pub use decoder::{AUDIO_SAMPLE_RATE, AudioDecodeError, AudioDecoder, FRAME_SAMPLES_10MS};
@@ -15,6 +17,15 @@ pub use jitter::{AdaptiveJitterBuffer, JitterConfig, JitterPacket, JitterStats, 
 #[cfg(windows)]
 pub use pipeline::MmcssGuard;
 pub use pipeline::{AudioDspProcessor, AudioSharedState, create_audio_ring};
+pub use wasapi_loopback::WasapiLoopbackHandle;
+#[cfg(windows)]
+pub use wasapi_loopback::spawn_wasapi_loopback_thread;
+pub use wasapi_sink::{
+    AudioRenderDevice, WasapiError, WasapiRenderHandle, is_known_virtual_cable_name,
+    select_safe_render_device,
+};
+#[cfg(windows)]
+pub use wasapi_sink::{enumerate_render_devices, spawn_wasapi_render_thread};
 
 #[cfg(test)]
 mod tests {
