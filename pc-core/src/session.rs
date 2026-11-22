@@ -54,6 +54,10 @@ pub struct StudioTelemetry {
     pub video_height: u32,
     pub video_frames_rx: u64,
     pub audio_packets_rx: u64,
+    pub rotation_deg: u16,
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub crop_zoom_x100: u16,
     pub mf_vcam_supported: bool,
     pub vcam_active: bool,
     pub vcam_status: String,
@@ -65,8 +69,9 @@ pub struct StudioTelemetry {
     pub virtual_mic_name: String,
 }
 
-/// Fast integer BT.601 NV12 -> BGRA32 converter with automatic downscaling
-/// to `max_out_w` (e.g. 640px) for zero-jank WinUI 3 live preview rendering.
+/// Fast integer BT.601 NV12 -> BGRA32 converter fitting inside `max_out_w x max_out_h`
+/// (e.g. `960 x 540`) so both landscape (`1920x1080 -> 960x540`) and 90°/270° rotated
+/// portrait frames (`1080x1920 -> 304x540`) always fit the preview buffer cleanly.
 pub fn nv12_to_preview_bgra(
     nv12: &[u8],
     src_w: u32,
@@ -75,7 +80,19 @@ pub fn nv12_to_preview_bgra(
     max_out_w: u32,
     out_bgra: &mut Vec<u8>,
 ) -> (u32, u32) {
-    if src_w == 0 || src_h == 0 || stride < src_w {
+    nv12_to_preview_bgra_box(nv12, src_w, src_h, stride, max_out_w, 540, out_bgra)
+}
+
+pub fn nv12_to_preview_bgra_box(
+    nv12: &[u8],
+    src_w: u32,
+    src_h: u32,
+    stride: u32,
+    max_out_w: u32,
+    max_out_h: u32,
+    out_bgra: &mut Vec<u8>,
+) -> (u32, u32) {
+    if src_w == 0 || src_h == 0 || stride < src_w || max_out_w < 2 || max_out_h < 2 {
         out_bgra.clear();
         return (0, 0);
     }
@@ -87,12 +104,11 @@ pub fn nv12_to_preview_bgra(
         return (0, 0);
     }
 
-    let (dst_w, dst_h) = if src_w > max_out_w {
-        let h = ((display_h as u64 * max_out_w as u64) / src_w as u64).max(2) as u32;
-        (max_out_w, h & !1)
-    } else {
-        (src_w, display_h)
-    };
+    let scale_w = max_out_w as f64 / src_w as f64;
+    let scale_h = max_out_h as f64 / display_h as f64;
+    let scale = scale_w.min(scale_h).min(1.0);
+    let dst_w = ((src_w as f64 * scale).round() as u32).max(2) & !1;
+    let dst_h = ((display_h as f64 * scale).round() as u32).max(2) & !1;
 
     out_bgra.resize((dst_w as usize) * (dst_h as usize) * 4, 255);
     let y_plane = &nv12[..y_plane_bytes];
@@ -505,6 +521,10 @@ impl StudioEngine {
             video_height: self.video_height.load(Ordering::Relaxed),
             video_frames_rx: self.video_frames_rx.load(Ordering::Relaxed),
             audio_packets_rx: self.audio_packets_rx.load(Ordering::Relaxed),
+            rotation_deg: self.rotation_deg.load(Ordering::Relaxed),
+            flip_h: self.flip_h.load(Ordering::Relaxed),
+            flip_v: self.flip_v.load(Ordering::Relaxed),
+            crop_zoom_x100: self.crop_zoom_x100.load(Ordering::Relaxed),
             mf_vcam_supported: mf_supported,
             vcam_active: self.vcam_active.load(Ordering::Relaxed),
             vcam_status: vcam_status_str,
@@ -845,7 +865,28 @@ async fn run_engine_loop(
                             }
                         }
                     }
-                    StreamType::Control | StreamType::Heartbeat => {}
+                    StreamType::Control => {
+                        // Apply remote transforms (Rotate / Mirror H / Flip V / Crop) sent from Android.
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&pkt.payload)
+                            && val.get("cmd").and_then(|c| c.as_str()) == Some("video_transform")
+                        {
+                            if let Some(rot) = val.get("rotation").and_then(|v| v.as_u64()) {
+                                let norm = ((rot % 360) as u16) / 90 * 90;
+                                rotation_deg.store(norm, Ordering::Relaxed);
+                            }
+                            if let Some(fh) = val.get("flip_h").and_then(|v| v.as_bool()) {
+                                flip_h.store(fh, Ordering::Relaxed);
+                            }
+                            if let Some(fv) = val.get("flip_v").and_then(|v| v.as_bool()) {
+                                flip_v.store(fv, Ordering::Relaxed);
+                            }
+                            if let Some(zm) = val.get("zoom_x100").and_then(|v| v.as_u64()) {
+                                crop_zoom_x100
+                                    .store((zm as u16).clamp(100, 250), Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    StreamType::Heartbeat => {}
                 }
             }
         } else {
@@ -892,5 +933,21 @@ mod tests {
         assert_eq!((pw, ph), (640, 360));
         assert_eq!(bgra.len(), 640 * 360 * 4);
         assert_eq!(bgra[3], 255);
+    }
+
+    #[test]
+    fn transform_nv12_frame_rotates_90_and_fits_preview_box() {
+        let mut nv12 = vec![128u8; nv12_byte_len(1920, 1080)];
+        nv12[..1920 * 1080].fill(200);
+        let mut rotated = Vec::new();
+        let (rw, rh) =
+            transform_nv12_frame(&nv12, 1920, 1080, 1920, 90, true, false, 125, &mut rotated);
+        assert_eq!((rw, rh), (1080, 1920));
+
+        let mut bgra = Vec::new();
+        let (pw, ph) = nv12_to_preview_bgra(&rotated, rw, rh, rw, 960, &mut bgra);
+        assert!(pw <= 960 && ph <= 540, "got {pw}x{ph}");
+        assert_eq!((pw, ph), (304, 540));
+        assert!(bgra.len() <= 960 * 540 * 4);
     }
 }

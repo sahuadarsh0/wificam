@@ -504,6 +504,9 @@ HRESULT WifiCamMediaSource::CreateNv12MediaType(
     MFSetAttributeRatio(mt.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     mt->SetUINT32(MF_MT_DEFAULT_STRIDE, width);
     mt->SetUINT32(MF_MT_SAMPLE_SIZE, width * height * 3 / 2);
+    const uint64_t avg_bitrate = (static_cast<uint64_t>(width) * height * 12ULL * fps_num) /
+        std::max<uint64_t>(1, fps_den);
+    mt->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(std::min<uint64_t>(avg_bitrate, UINT32_MAX)));
     *out_type = mt.Detach();
     return S_OK;
 }

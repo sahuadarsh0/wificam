@@ -105,6 +105,26 @@ public sealed partial class MainWindow : Window
         FramesCounterText.Text = $"VIDEO {snap.VideoFramesRx} f";
         AudioCounterText.Text = $"AUDIO {snap.AudioPacketsRx} pkt";
 
+        // Sync transform buttons if Android changed rotation / mirror / flip / crop remotely
+        if (snap.RotationDeg != _rotationDeg)
+        {
+            _rotationDeg = snap.RotationDeg;
+            RotateButton.Content = $"Rotate {_rotationDeg}°";
+        }
+        if (snap.CropZoomX100 >= 100 && snap.CropZoomX100 != _cropZoomX100)
+        {
+            _cropZoomX100 = snap.CropZoomX100;
+            CropZoomButton.Content = $"Crop {_cropZoomX100 / 100.0:0.##}x";
+        }
+        if (FlipHToggle.IsChecked != snap.FlipH)
+        {
+            FlipHToggle.IsChecked = snap.FlipH;
+        }
+        if (FlipVToggle.IsChecked != snap.FlipV)
+        {
+            FlipVToggle.IsChecked = snap.FlipV;
+        }
+
         ViewportHeadline.Text = snap.SessionLocked
             ? "Privacy Locked (Win+L)"
             : snap.VideoPaused

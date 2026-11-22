@@ -23,6 +23,10 @@ public sealed class StudioTelemetry
     [JsonPropertyName("video_height")] public uint VideoHeight { get; set; } = 1080;
     [JsonPropertyName("video_frames_rx")] public ulong VideoFramesRx { get; set; }
     [JsonPropertyName("audio_packets_rx")] public ulong AudioPacketsRx { get; set; }
+    [JsonPropertyName("rotation_deg")] public ushort RotationDeg { get; set; }
+    [JsonPropertyName("flip_h")] public bool FlipH { get; set; }
+    [JsonPropertyName("flip_v")] public bool FlipV { get; set; }
+    [JsonPropertyName("crop_zoom_x100")] public ushort CropZoomX100 { get; set; } = 100;
     [JsonPropertyName("mf_vcam_supported")] public bool MfVcamSupported { get; set; }
     [JsonPropertyName("vcam_active")] public bool VcamActive { get; set; }
     [JsonPropertyName("vcam_status")] public string VcamStatus { get; set; } = "";

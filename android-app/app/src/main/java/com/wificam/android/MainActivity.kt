@@ -24,7 +24,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.wificam.android.audio.OboeAudioEngine
 import com.wificam.android.core.Brand
+import com.wificam.android.protocol.PacketFlags
 import com.wificam.android.protocol.PairingInfo
+import com.wificam.android.protocol.StreamType
+import com.wificam.android.protocol.WirePacket
 import com.wificam.android.qr.QrPairingScanner
 import com.wificam.android.service.StreamForegroundService
 import com.wificam.android.transport.ActiveTransportTier
@@ -54,8 +57,24 @@ class MainActivity : ComponentActivity() {
     private var lastQrScanMs: Long = 0L
     private var rememberedControlPort: Int = Brand.DEFAULT_CONTROL_PORT
     private var rememberedUdpPort: Int = Brand.DEFAULT_MEDIA_UDP_PORT
+    private var controlSeq: Int = 1
 
     private val uiState = MutableStateFlow(StudioUiState())
+
+    private fun sendVideoTransformToPc() {
+        val st = uiState.value
+        val zoomX100 = (st.previewCropMode.zoom * 100f).toInt().coerceIn(100, 250)
+        val json = """{"cmd":"video_transform","rotation":${st.previewRotationDeg},"flip_h":${st.previewFlipH},"flip_v":${st.previewFlipV},"zoom_x100":$zoomX100}"""
+        transportManager.enqueuePacket(
+            WirePacket(
+                streamType = StreamType.Control,
+                flags = PacketFlags.NONE,
+                seq = (controlSeq++).toUInt(),
+                ptsUs = System.nanoTime() / 1000L,
+                payload = json.toByteArray(Charsets.UTF_8),
+            )
+        )
+    }
 
     private fun saveRememberedHost(name: String, ip: String, controlPort: Int, udpPort: Int) {
         rememberedControlPort = controlPort
@@ -184,12 +203,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onRotatePreview = {
                         uiState.update { it.copy(previewRotationDeg = (it.previewRotationDeg + 90) % 360) }
+                        sendVideoTransformToPc()
                     },
                     onToggleFlipH = {
                         uiState.update { it.copy(previewFlipH = !it.previewFlipH) }
+                        sendVideoTransformToPc()
                     },
                     onToggleFlipV = {
                         uiState.update { it.copy(previewFlipV = !it.previewFlipV) }
+                        sendVideoTransformToPc()
                     },
                     onCycleCropMode = {
                         val all = PreviewCropMode.entries
@@ -197,6 +219,7 @@ class MainActivity : ComponentActivity() {
                             val next = all[(all.indexOf(it.previewCropMode) + 1) % all.size]
                             it.copy(previewCropMode = next)
                         }
+                        sendVideoTransformToPc()
                     },
                     onOpenSettings = {
                         uiState.update { it.copy(isSettingsOpen = true, isQrScannerOpen = false) }
@@ -381,6 +404,7 @@ class MainActivity : ComponentActivity() {
 
         uiState.update { it.copy(isStreaming = true) }
         restartCameraPipeline()
+        sendVideoTransformToPc()
     }
 
     private fun stopStreaming() {

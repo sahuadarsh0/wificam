@@ -95,7 +95,7 @@ public:
             auto* mt = static_cast<AM_MEDIA_TYPE*>(CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE)));
             if (!mt) return E_OUTOFMEMORY;
             std::memset(mt, 0, sizeof(AM_MEDIA_TYPE));
-            HRESULT hr = BuildNv12AmMediaType(kSupportedModes[pos_], mt);
+            HRESULT hr = BuildYuy2AmMediaType(kSupportedModes[pos_], mt);
             if (FAILED(hr)) {
                 CoTaskMemFree(mt);
                 return hr;
@@ -128,7 +128,7 @@ private:
 
 } // namespace
 
-HRESULT BuildNv12AmMediaType(const DsVideoMode& mode, AM_MEDIA_TYPE* out_mt) {
+HRESULT BuildYuy2AmMediaType(const DsVideoMode& mode, AM_MEDIA_TYPE* out_mt) {
     if (!out_mt) return E_POINTER;
     std::memset(out_mt, 0, sizeof(AM_MEDIA_TYPE));
 
@@ -136,7 +136,7 @@ HRESULT BuildNv12AmMediaType(const DsVideoMode& mode, AM_MEDIA_TYPE* out_mt) {
     if (!vih) return E_OUTOFMEMORY;
     std::memset(vih, 0, sizeof(VIDEOINFOHEADER));
 
-    const DWORD sample_bytes = mode.width * mode.height * 3 / 2;
+    const DWORD sample_bytes = mode.width * mode.height * 2;
     vih->AvgTimePerFrame =
         (10'000'000LL * static_cast<LONGLONG>(mode.fps_den)) / std::max<LONGLONG>(1, mode.fps_num);
     vih->dwBitRate = sample_bytes * 8 * mode.fps_num / std::max(1u, mode.fps_den);
@@ -146,12 +146,12 @@ HRESULT BuildNv12AmMediaType(const DsVideoMode& mode, AM_MEDIA_TYPE* out_mt) {
     vih->bmiHeader.biWidth = static_cast<LONG>(mode.width);
     vih->bmiHeader.biHeight = static_cast<LONG>(mode.height);
     vih->bmiHeader.biPlanes = 1;
-    vih->bmiHeader.biBitCount = 12;
-    vih->bmiHeader.biCompression = MAKEFOURCC('N', 'V', '1', '2');
+    vih->bmiHeader.biBitCount = 16;
+    vih->bmiHeader.biCompression = MAKEFOURCC('Y', 'U', 'Y', '2');
     vih->bmiHeader.biSizeImage = sample_bytes;
 
     out_mt->majortype = MEDIATYPE_Video;
-    out_mt->subtype = MEDIASUBTYPE_NV12;
+    out_mt->subtype = MEDIASUBTYPE_YUY2;
     out_mt->bFixedSizeSamples = TRUE;
     out_mt->bTemporalCompression = FALSE;
     out_mt->lSampleSize = sample_bytes;
@@ -242,13 +242,22 @@ STDMETHODIMP WifiCamDsPin::Connect(IPin* receive_pin, const AM_MEDIA_TYPE* mt) {
     std::lock_guard guard(lock_);
     if (peer_) return VFW_E_ALREADY_CONNECTED;
 
+    const bool use_caller_mt = mt && mt->subtype == MEDIASUBTYPE_YUY2 &&
+        mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER) && mt->pbFormat;
+
     AM_MEDIA_TYPE proposed{};
-    HRESULT hr = mt ? CopyAmMediaType(*mt, &proposed) : BuildNv12AmMediaType(current_mode_, &proposed);
+    HRESULT hr = use_caller_mt ? CopyAmMediaType(*mt, &proposed) : BuildYuy2AmMediaType(current_mode_, &proposed);
     if (FAILED(hr)) return hr;
 
-    if (FAILED(QueryAccept(&proposed))) {
+    if (QueryAccept(&proposed) != S_OK) {
         FreeAmMediaType(proposed);
         return VFW_E_TYPE_NOT_ACCEPTED;
+    }
+
+    if (use_caller_mt) {
+        const auto* vih = reinterpret_cast<const VIDEOINFOHEADER*>(proposed.pbFormat);
+        current_mode_.width = static_cast<uint32_t>(std::abs(vih->bmiHeader.biWidth));
+        current_mode_.height = static_cast<uint32_t>(std::abs(vih->bmiHeader.biHeight));
     }
 
     ComPtr<IMemInputPin> mem_in;
@@ -361,7 +370,7 @@ STDMETHODIMP WifiCamDsPin::QueryId(LPWSTR* out_id) {
 
 STDMETHODIMP WifiCamDsPin::QueryAccept(const AM_MEDIA_TYPE* mt) {
     if (!mt) return E_POINTER;
-    if (mt->majortype != MEDIATYPE_Video || mt->subtype != MEDIASUBTYPE_NV12) {
+    if (mt->majortype != MEDIATYPE_Video || mt->subtype != MEDIASUBTYPE_YUY2) {
         return S_FALSE;
     }
     if (mt->formattype != FORMAT_VideoInfo || mt->cbFormat < sizeof(VIDEOINFOHEADER) || !mt->pbFormat) {
@@ -412,7 +421,7 @@ STDMETHODIMP WifiCamDsPin::GetFormat(AM_MEDIA_TYPE** out_mt) {
     std::lock_guard guard(lock_);
     *out_mt = static_cast<AM_MEDIA_TYPE*>(CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE)));
     if (!*out_mt) return E_OUTOFMEMORY;
-    return BuildNv12AmMediaType(current_mode_, *out_mt);
+    return BuildYuy2AmMediaType(current_mode_, *out_mt);
 }
 
 STDMETHODIMP WifiCamDsPin::GetNumberOfCapabilities(int* count, int* size) {
@@ -430,7 +439,7 @@ STDMETHODIMP WifiCamDsPin::GetStreamCaps(int index, AM_MEDIA_TYPE** out_mt, BYTE
     const auto& m = kSupportedModes[index];
     *out_mt = static_cast<AM_MEDIA_TYPE*>(CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE)));
     if (!*out_mt) return E_OUTOFMEMORY;
-    HRESULT hr = BuildNv12AmMediaType(m, *out_mt);
+    HRESULT hr = BuildYuy2AmMediaType(m, *out_mt);
     if (FAILED(hr)) {
         CoTaskMemFree(*out_mt);
         *out_mt = nullptr;
@@ -516,29 +525,57 @@ HRESULT WifiCamDsPin::StopStreaming() {
     return S_OK;
 }
 
-void WifiCamDsPin::FillSlateNv12(uint8_t* dst, uint32_t width, uint32_t height) const {
-    const size_t y_len = static_cast<size_t>(width) * height;
-    const size_t uv_len = y_len / 2;
-    std::memset(dst, 24, y_len);
-    uint8_t* uv = dst + y_len;
-    for (size_t i = 0; i + 1 < uv_len; i += 2) {
-        uv[i] = 138;
-        uv[i + 1] = 120;
+void WifiCamDsPin::FillSlateYuy2(uint8_t* dst, uint32_t width, uint32_t height) const {
+    const size_t pairs = (static_cast<size_t>(width) * height) / 2;
+    for (size_t i = 0; i < pairs; ++i) {
+        dst[i * 4 + 0] = 24;  // Y0 (dark carbon)
+        dst[i * 4 + 1] = 136; // U (subtle studio slate blue)
+        dst[i * 4 + 2] = 24;  // Y1
+        dst[i * 4 + 3] = 122; // V
     }
 }
 
 void WifiCamDsPin::StreamThreadLoop() {
-    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, framebus::kGlobalShmName);
-    if (!mapping) {
-        mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, framebus::kLocalShmName);
-    }
-    const void* view =
-        mapping ? MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, framebus::kTotalShmBytes) : nullptr;
+    HANDLE file = INVALID_HANDLE_VALUE;
+    HANDLE mapping = nullptr;
+    const void* view = nullptr;
+
+    auto ensure_shm = [&]() {
+        if (view) return;
+        mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, framebus::kGlobalShmName);
+        if (!mapping) {
+            mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, framebus::kLocalShmName);
+        }
+        if (!mapping) {
+            file = CreateFileW(
+                L"C:\\ProgramData\\WifiCam\\framebus.shm",
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (file != INVALID_HANDLE_VALUE) {
+                mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+                if (!mapping) {
+                    CloseHandle(file);
+                    file = INVALID_HANDLE_VALUE;
+                }
+            }
+        }
+        if (mapping) {
+            view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, framebus::kTotalShmBytes);
+        }
+    };
 
     std::vector<uint8_t> scratch(framebus::kMaxSlotBytes);
     int64_t frame_idx = 0;
 
     while (streaming_.load(std::memory_order_acquire)) {
+        if (!view && (frame_idx % 15 == 0)) {
+            ensure_shm();
+        }
+
         ComPtr<IMemAllocator> alloc;
         ComPtr<IMemInputPin> mem_in;
         DsVideoMode mode{};
@@ -555,7 +592,7 @@ void WifiCamDsPin::StreamThreadLoop() {
 
         const int64_t frame_dur_hns =
             (10'000'000LL * static_cast<int64_t>(mode.fps_den)) / std::max<int64_t>(1, mode.fps_num);
-        const size_t nv12_bytes = static_cast<size_t>(mode.width) * mode.height * 3 / 2;
+        const size_t yuy2_bytes = static_cast<size_t>(mode.width) * mode.height * 2;
 
         ComPtr<IMediaSample> sample;
         if (FAILED(alloc->GetBuffer(&sample, nullptr, nullptr, 0)) || !sample) {
@@ -565,16 +602,52 @@ void WifiCamDsPin::StreamThreadLoop() {
 
         BYTE* dst = nullptr;
         if (SUCCEEDED(sample->GetPointer(&dst)) && dst &&
-            static_cast<size_t>(sample->GetSize()) >= nv12_bytes) {
+            static_cast<size_t>(sample->GetSize()) >= yuy2_bytes) {
             framebus::FrameSnapshotMeta meta{};
-            if (view && framebus::TryReadLatestFrame(view, scratch.data(), scratch.size(), meta) &&
-                meta.pixel_format == framebus::PixelFormat::Nv12 && meta.width == mode.width &&
-                meta.height == mode.height && meta.payload_bytes >= nv12_bytes) {
-                std::memcpy(dst, scratch.data(), nv12_bytes);
+            const bool has_nv12 = view &&
+                framebus::TryReadLatestFrame(view, scratch.data(), scratch.size(), meta) &&
+                meta.pixel_format == framebus::PixelFormat::Nv12 &&
+                meta.width >= 2 && meta.height >= 2 && meta.stride >= meta.width &&
+                meta.payload_bytes >= static_cast<size_t>(meta.stride) * meta.height +
+                                          static_cast<size_t>(meta.stride) * (meta.height / 2);
+
+            if (has_nv12) {
+                // Aspect-preserving letterbox/pillarbox NV12 -> YUY2 so 16:9 AND 90-deg rotated portrait frames look natural!
+                FillSlateYuy2(dst, mode.width, mode.height);
+                const uint8_t* src_y = scratch.data();
+                const uint8_t* src_uv = scratch.data() + static_cast<size_t>(meta.stride) * meta.height;
+
+                const double src_aspect = static_cast<double>(meta.width) / static_cast<double>(meta.height);
+                const double dst_aspect = static_cast<double>(mode.width) / static_cast<double>(mode.height);
+                uint32_t draw_w = mode.width;
+                uint32_t draw_h = mode.height;
+                if (src_aspect > dst_aspect) {
+                    draw_h = std::max<uint32_t>(2, static_cast<uint32_t>(mode.width / src_aspect) & ~1u);
+                } else {
+                    draw_w = std::max<uint32_t>(2, static_cast<uint32_t>(mode.height * src_aspect) & ~1u);
+                }
+                const uint32_t off_x = ((mode.width - draw_w) / 2) & ~1u;
+                const uint32_t off_y = (mode.height - draw_h) / 2;
+
+                for (uint32_t dy = 0; dy < draw_h; ++dy) {
+                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(dy) * meta.height) / draw_h);
+                    const uint8_t* sy_row = src_y + static_cast<size_t>(sy) * meta.stride;
+                    const uint8_t* suv_row = src_uv + static_cast<size_t>(sy >> 1) * meta.stride;
+                    uint8_t* drow = dst + (static_cast<size_t>(off_y + dy) * mode.width + off_x) * 2;
+                    for (uint32_t dx = 0; dx + 1 < draw_w; dx += 2) {
+                        const uint32_t sx0 = static_cast<uint32_t>((static_cast<uint64_t>(dx) * meta.width) / draw_w);
+                        const uint32_t sx1 = static_cast<uint32_t>((static_cast<uint64_t>(dx + 1) * meta.width) / draw_w);
+                        const uint32_t uv_x = sx0 & ~1u;
+                        drow[dx * 2 + 0] = sy_row[sx0];
+                        drow[dx * 2 + 1] = suv_row[uv_x];
+                        drow[dx * 2 + 2] = sy_row[sx1];
+                        drow[dx * 2 + 3] = suv_row[uv_x + 1];
+                    }
+                }
             } else {
-                FillSlateNv12(dst, mode.width, mode.height);
+                FillSlateYuy2(dst, mode.width, mode.height);
             }
-            sample->SetActualDataLength(static_cast<long>(nv12_bytes));
+            sample->SetActualDataLength(static_cast<long>(yuy2_bytes));
             REFERENCE_TIME t_start = frame_idx * frame_dur_hns;
             REFERENCE_TIME t_stop = t_start + frame_dur_hns;
             sample->SetTime(&t_start, &t_stop);
@@ -589,6 +662,7 @@ void WifiCamDsPin::StreamThreadLoop() {
 
     if (view) UnmapViewOfFile(view);
     if (mapping) CloseHandle(mapping);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +695,11 @@ STDMETHODIMP WifiCamDsFilter::QueryInterface(REFIID riid, void** ppv) {
     if (riid == IID_IUnknown || riid == IID_IPersist || riid == IID_IMediaFilter ||
         riid == IID_IBaseFilter) {
         *ppv = static_cast<IBaseFilter*>(this);
+        AddRef();
+        return S_OK;
+    }
+    if (riid == IID_IAMFilterMiscFlags) {
+        *ppv = static_cast<IAMFilterMiscFlags*>(this);
         AddRef();
         return S_OK;
     }
