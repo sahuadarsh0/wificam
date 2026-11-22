@@ -1,9 +1,11 @@
 //! Lock-free studio audio DSP engine (48 kHz mono, 10 ms frames).
 
 pub mod decoder;
+pub mod drift_servo;
 pub mod jitter;
 
 pub use decoder::{AUDIO_SAMPLE_RATE, AudioDecodeError, AudioDecoder, FRAME_SAMPLES_10MS};
+pub use drift_servo::{DriftServoConfig, DriftServoResampler, MAX_DRIFT_RATIO_OFFSET};
 pub use jitter::{AdaptiveJitterBuffer, JitterConfig, JitterPacket, JitterStats, PlayoutAction};
 
 #[cfg(test)]
