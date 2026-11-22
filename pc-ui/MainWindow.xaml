@@ -16,10 +16,10 @@
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                 <Ellipse x:Name="LiveStatusDot" Width="9" Height="9" Fill="{StaticResource StudioInkSecondaryBrush}" />
                 <TextBlock Text="WifiCam Studio" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource StudioInkPrimaryBrush}" />
-                <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="999" Padding="10,2">
+                <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="10,3">
                     <TextBlock x:Name="TierBadgeText" Text="STANDBY" FontFamily="Cascadia Mono" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource StudioAccentBrush}" />
                 </Border>
-                <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="999" Padding="10,2">
+                <Border Background="{StaticResource StudioCardBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="10,3">
                     <TextBlock Text="ZERO CLOUD • E2E LAN" FontFamily="Cascadia Mono" FontSize="10" Foreground="{StaticResource StudioInkSecondaryBrush}" />
                 </Border>
             </StackPanel>

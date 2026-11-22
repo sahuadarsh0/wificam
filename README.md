@@ -6,6 +6,26 @@
 
 ---
 
+## Screenshots
+
+### Windows 11 WinUI 3 Studio Console
+Live Mica dark-mode desktop console running on Windows 11 — showing the **Virtual Camera** controls (`MFCreateVirtualCamera`), **Fast Wireless QR Pairing** code (`wificam://pair?...` + TOFU fingerprint), **Broadcast 16-Segment LED VU Meter**, **Studio Audio DSP** (RNNoise AI / DeepFilterNet3 + WebRTC AEC3), and **Privacy Lock Guard (`Win+L`)**:
+
+![WifiCam Studio — Windows 11 WinUI 3 Desktop Console](docs/screenshots/windows-studio-console.png)
+
+> *Android Jetpack Compose screenshots (Studio Viewfinder, Live QR Scanner Overlay, and 0-nit OLED Curtain Mode) will be added once captured on a physical Android device.*
+
+---
+
+## Releases & Downloads
+
+Prebuilt binaries are published on [GitHub Releases](https://github.com/sahuadarsh0/wificam/releases/latest):
+- **Windows 11 / 10 Installer:** `WifiCam-Studio-Setup-<version>-x64.exe` *(built automatically via `.github/workflows/release-windows.yml`)*
+- **Windows Portable Archive:** `WifiCam-Studio-<tag>-Windows-x64-portable.zip`
+- **Android Companion APK:** `WifiCam-<tag>-android.apk`
+
+---
+
 ## Why WifiCam?
 
 | Capability | WifiCam Studio | Typical Proprietary Alternatives |

@@ -31,7 +31,7 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.Resize(new SizeInt32(1060, 740));
+        AppWindow.Resize(new SizeInt32(1080, 840));
 
         BuildVuMeterSegments();
 
@@ -106,11 +106,11 @@ public sealed partial class MainWindow : Window
         FingerprintText.Text = $"TOFU FP: {snap.HostFingerprint}";
         VirtualMicStatusText.Text = $"Virtual Mic Sink: {snap.VirtualMicName}";
 
-        if (string.IsNullOrEmpty(UsbStatusText.Text) || UsbStatusText.Text.StartsWith("Virtual Camera Driver:"))
+        if (string.IsNullOrEmpty(UsbStatusText.Text) || UsbStatusText.Text.StartsWith("Virtual Camera"))
         {
             UsbStatusText.Text = snap.MfVcamSupported
-                ? "Virtual Camera Driver: Windows 11 Media Foundation (MFCreateVirtualCamera Ready)"
-                : "Virtual Camera Driver: Windows 10 DirectShow Fallback Ready";
+                ? "Virtual Camera: Win11 Media Foundation (MFCreateVirtualCamera Ready)"
+                : "Virtual Camera: Win10 DirectShow Fallback Ready";
         }
 
         // Update 16-segment Broadcast LED VU meter
