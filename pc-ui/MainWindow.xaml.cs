@@ -125,16 +125,18 @@ public sealed partial class MainWindow : Window
             FlipVToggle.IsChecked = snap.FlipV;
         }
 
+        bool isPhoneConnected = snap.Running && !snap.ActiveTier.StartsWith("Standby", StringComparison.OrdinalIgnoreCase);
+
         ViewportHeadline.Text = snap.SessionLocked
             ? "Privacy Locked (Win+L)"
             : snap.VideoPaused
                 ? "Camera Paused"
-                : snap.VideoFramesRx > 0
+                : (isPhoneConnected && snap.VcamActive)
                     ? "Streaming Live to Virtual Camera"
                     : "Waiting for Android Phone";
 
-        // Update live hardware-decoded video preview bitmap
-        bool showLivePreview = snap.Running && !snap.VideoPaused && !snap.SessionLocked && snap.VideoFramesRx > 0;
+        // Update live hardware-decoded video preview bitmap (hidden automatically when phone disconnects)
+        bool showLivePreview = isPhoneConnected && !snap.VideoPaused && !snap.SessionLocked && snap.VideoFramesRx > 0;
         if (showLivePreview && _engine.TryCopyPreviewBgra(
                 _previewBgraBuf,
                 _lastPreviewSeq,
@@ -155,6 +157,10 @@ public sealed partial class MainWindow : Window
             }
             _previewBitmap.Invalidate();
         }
+        else if (!showLivePreview)
+        {
+            _lastPreviewSeq = 0;
+        }
 
         bool hasPreviewPixels = showLivePreview && _previewBitmap != null && _lastPreviewSeq > 0;
         LivePreviewImage.Visibility = hasPreviewPixels ? Visibility.Visible : Visibility.Collapsed;
@@ -174,7 +180,10 @@ public sealed partial class MainWindow : Window
 
         if (string.IsNullOrEmpty(UsbStatusText.Text) ||
             UsbStatusText.Text.StartsWith("Virtual Camera") ||
-            UsbStatusText.Text.StartsWith("Active in Apps:"))
+            UsbStatusText.Text.StartsWith("Active in Apps:") ||
+            UsbStatusText.Text.StartsWith("Standby") ||
+            UsbStatusText.Text.StartsWith("Camera Paused") ||
+            UsbStatusText.Text.StartsWith("Privacy Locked"))
         {
             if (!string.IsNullOrEmpty(snap.VcamStatus))
             {
@@ -182,13 +191,13 @@ public sealed partial class MainWindow : Window
                 UsbStatusText.Foreground = new SolidColorBrush(
                     snap.VcamActive
                         ? Color.FromArgb(255, 34, 197, 94)
-                        : Color.FromArgb(255, 245, 158, 11));
+                        : Color.FromArgb(255, 156, 168, 186));
             }
             else
             {
                 UsbStatusText.Text = snap.MfVcamSupported
-                    ? "Virtual Camera: Win11 Media Foundation (MFCreateVirtualCamera Ready)"
-                    : "Virtual Camera: Win10 DirectShow Fallback Ready";
+                    ? "Standby — camera appears in apps only while phone is live"
+                    : "Windows 11 required for native Media Foundation Virtual Camera";
             }
         }
 

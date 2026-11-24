@@ -17,6 +17,6 @@ pub use shm::{
 #[cfg(windows)]
 pub use shm::{FramebusReader, FramebusWriter};
 pub use slate::{nv12_byte_len, render_nv12_slate};
-pub use vcam_host::{VCAM_DS_CLSID_STR, VCAM_MF_CLSID_STR, VirtualCameraError};
+pub use vcam_host::{VCAM_MF_CLSID_STR, VirtualCameraError};
 #[cfg(windows)]
 pub use vcam_host::{Win11VirtualCamera, is_mf_virtual_camera_supported};

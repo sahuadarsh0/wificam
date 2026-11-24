@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Developer helper to install & register WifiCam's Virtual Camera COM DLLs
-    into C:\Program Files\WifiCam\vcam so Windows 11 FrameServer can load them.
+    Installs and registers WifiCam's Windows 11 Media Foundation Virtual Camera COM DLL
+    into C:\Program Files\WifiCam\vcam and removes any legacy DirectShow filter.
 .DESCRIPTION
     Run from an elevated (Administrator) PowerShell prompt.
-    Pass -Unregister to cleanly unregister and remove the COM DLLs.
+    Pass -Unregister to cleanly unregister and remove the COM DLL.
 #>
 param(
     [switch]$Unregister
@@ -15,15 +15,21 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $InstallDir = Join-Path $env:ProgramFiles "WifiCam\vcam"
 
 $MfSrc = Join-Path $RepoRoot "pc-vcam-mf\build\Release\pc-vcam-mf.dll"
-$DsSrc = Join-Path $RepoRoot "pc-vcam-ds\build\Release\pc-vcam-ds.dll"
 $MfDst = Join-Path $InstallDir "pc-vcam-mf.dll"
-$DsDst = Join-Path $InstallDir "pc-vcam-ds.dll"
+$LegacyDsDst = Join-Path $InstallDir "pc-vcam-ds.dll"
+
+# Always clean up any legacy DirectShow ghost camera left over from v0.1.0-v0.1.4.
+if (Test-Path $LegacyDsDst) {
+    & regsvr32.exe /s /u "$LegacyDsDst"
+    Remove-Item -Force $LegacyDsDst -ErrorAction SilentlyContinue
+}
+Remove-Item -Path "HKLM:\SOFTWARE\Classes\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{C8F5A0B2-7D3E-4A29-8F4B-2E5D6C7F8091}" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "HKLM:\SOFTWARE\Classes\CLSID\{C8F5A0B2-7D3E-4A29-8F4B-2E5D6C7F8091}" -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($Unregister) {
     if (Test-Path $MfDst) { & regsvr32.exe /s /u "$MfDst" }
-    if (Test-Path $DsDst) { & regsvr32.exe /s /u "$DsDst" }
     if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
-    Write-Host "WifiCam Virtual Camera DLLs unregistered cleanly." -ForegroundColor Green
+    Write-Host "WifiCam Virtual Camera DLL unregistered cleanly." -ForegroundColor Green
     exit 0
 }
 
@@ -35,12 +41,4 @@ if (Test-Path $MfSrc) {
     Write-Host "Registered Windows 11 Media Foundation Virtual Camera: $MfDst" -ForegroundColor Cyan
 } else {
     Write-Warning "Not built yet: $MfSrc (run cmake --build pc-vcam-mf/build --config Release)"
-}
-
-if (Test-Path $DsSrc) {
-    Copy-Item -Force $DsSrc $DsDst
-    & regsvr32.exe /s "$DsDst"
-    Write-Host "Registered Windows 10 DirectShow Virtual Camera: $DsDst" -ForegroundColor Cyan
-} else {
-    Write-Warning "Not built yet: $DsSrc (run cmake --build pc-vcam-ds/build --config Release)"
 }

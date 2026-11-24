@@ -670,33 +670,24 @@ async fn run_engine_loop(
         );
     }
 
-    // Activate Windows 11 Media Foundation Virtual Camera ("WifiCam Camera") so Chrome,
-    // Google Meet, Teams, Zoom, Discord, OBS, and Windows Camera immediately discover it.
+    // Phone-Link-style dynamic virtual camera lifecycle:
+    // Do NOT register/expose "WifiCam Camera" while idle. Create & Start it ONLY
+    // when a phone actually connects and delivers live video frames, and Remove()
+    // it immediately on disconnect / pause / lock so apps never see a black camera!
     #[cfg(windows)]
-    let _live_vcam = {
-        let cam_name = format!("{APP_DISPLAY_NAME} Camera");
-        match crate::video::Win11VirtualCamera::create(&cam_name).and_then(|mut vcam| {
-            vcam.start()?;
-            Ok(vcam)
-        }) {
-            Ok(vcam) => {
-                vcam_active.store(true, Ordering::Release);
-                if let Ok(mut s) = vcam_status.lock() {
-                    *s = format!("Active in Apps: \"{cam_name}\" (Win11 Media Foundation)");
-                }
-                Some(vcam)
-            }
-            Err(err) => {
-                vcam_active.store(false, Ordering::Release);
-                if let Ok(mut s) = vcam_status.lock() {
-                    *s = format!(
-                        "Virtual Camera inactive ({err}) — run Setup or register-vcam.ps1 as Admin"
-                    );
-                }
-                None
-            }
-        }
-    };
+    let cam_name = format!("{APP_DISPLAY_NAME} Camera");
+    #[cfg(windows)]
+    let mut live_vcam: Option<crate::video::Win11VirtualCamera> = None;
+    #[cfg(windows)]
+    let mut last_video_rx: Option<std::time::Instant> = None;
+    #[cfg(windows)]
+    let mut last_vcam_retry: Option<std::time::Instant> = None;
+    let mut last_any_rx: Option<std::time::Instant> = None;
+
+    vcam_active.store(false, Ordering::Release);
+    if let Ok(mut s) = vcam_status.lock() {
+        *s = "Standby — camera appears in apps only while phone is live".into();
+    }
     #[cfg(not(windows))]
     let _ = (
         &vcam_active,
@@ -724,8 +715,46 @@ async fn run_engine_loop(
     let mut preview_seq: u64 = 0;
 
     while running.load(Ordering::Acquire) {
+        let now = std::time::Instant::now();
         let paused = video_paused.load(Ordering::Relaxed);
         let locked = session_locked.load(Ordering::Relaxed);
+
+        // Tear down the Windows 11 virtual camera immediately when paused, locked,
+        // or after 3s without live video frames (Phone-Link behavior — no black ghost camera!).
+        #[cfg(windows)]
+        {
+            let video_timed_out = last_video_rx
+                .map(|t| now.duration_since(t) > std::time::Duration::from_secs(3))
+                .unwrap_or(false);
+            if (paused || locked || video_timed_out) && live_vcam.is_some() {
+                drop(live_vcam.take());
+                vcam_active.store(false, Ordering::Release);
+                if let Ok(mut s) = vcam_status.lock() {
+                    *s = if locked {
+                        "Privacy Locked (Win+L) — virtual camera hidden".into()
+                    } else if paused {
+                        "Camera Paused — virtual camera hidden".into()
+                    } else {
+                        "Standby — camera appears in apps only while phone is live".into()
+                    };
+                }
+                if video_timed_out {
+                    last_video_rx = None;
+                    if let Ok(mut pf) = preview_frame.try_lock() {
+                        pf.bgra.clear();
+                        pf.width = 0;
+                        pf.height = 0;
+                    }
+                }
+            }
+        }
+        if let Some(t) = last_any_rx
+            && now.duration_since(t) > std::time::Duration::from_secs(4)
+        {
+            last_any_rx = None;
+            active_tier.store(0, Ordering::Relaxed);
+        }
+
         if paused || locked {
             let st = if locked {
                 CameraState::Locked
@@ -757,6 +786,7 @@ async fn run_engine_loop(
                     .await;
 
             if let Ok(Ok((pkt, _peer))) = rx {
+                last_any_rx = Some(std::time::Instant::now());
                 active_tier.store(TransportTier::WifiLan as u8, Ordering::Relaxed);
                 match pkt.stream_type {
                     StreamType::AudioPcm16 => {
@@ -884,6 +914,43 @@ async fn run_engine_loop(
                                                 pub_bytes,
                                             );
                                         }
+                                        // Activate the Windows 11 Virtual Camera ONLY once real frames are flowing!
+                                        last_video_rx = Some(std::time::Instant::now());
+                                        if live_vcam.is_none() {
+                                            let retry_ok = last_vcam_retry
+                                                .map(|t| {
+                                                    t.elapsed() >= std::time::Duration::from_secs(3)
+                                                })
+                                                .unwrap_or(true);
+                                            if retry_ok {
+                                                last_vcam_retry = Some(std::time::Instant::now());
+                                                match crate::video::Win11VirtualCamera::create(
+                                                    &cam_name,
+                                                )
+                                                .and_then(|mut v| {
+                                                    v.start()?;
+                                                    Ok(v)
+                                                }) {
+                                                    Ok(v) => {
+                                                        live_vcam = Some(v);
+                                                        vcam_active.store(true, Ordering::Release);
+                                                        if let Ok(mut s) = vcam_status.lock() {
+                                                            *s = format!(
+                                                                "Active in Apps: \"{cam_name}\" (Win11 Media Foundation)"
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(err) => {
+                                                        vcam_active.store(false, Ordering::Release);
+                                                        if let Ok(mut s) = vcam_status.lock() {
+                                                            *s = format!(
+                                                                "Virtual Camera error ({err}) — run Setup or register-vcam.ps1 as Admin"
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         let src_h_for_bgra =
                                             if needs_tx { pub_h } else { f.height };
                                         let (pw, ph) = nv12_to_preview_bgra(
@@ -910,23 +977,47 @@ async fn run_engine_loop(
                         }
                     }
                     StreamType::Control => {
-                        // Apply remote transforms (Rotate / Mirror H / Flip V / Crop) sent from Android.
-                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&pkt.payload)
-                            && val.get("cmd").and_then(|c| c.as_str()) == Some("video_transform")
-                        {
-                            if let Some(rot) = val.get("rotation").and_then(|v| v.as_u64()) {
-                                let norm = ((rot % 360) as u16) / 90 * 90;
-                                rotation_deg.store(norm, Ordering::Relaxed);
-                            }
-                            if let Some(fh) = val.get("flip_h").and_then(|v| v.as_bool()) {
-                                flip_h.store(fh, Ordering::Relaxed);
-                            }
-                            if let Some(fv) = val.get("flip_v").and_then(|v| v.as_bool()) {
-                                flip_v.store(fv, Ordering::Relaxed);
-                            }
-                            if let Some(zm) = val.get("zoom_x100").and_then(|v| v.as_u64()) {
-                                crop_zoom_x100
-                                    .store((zm as u16).clamp(100, 250), Ordering::Relaxed);
+                        // Handle remote transforms & explicit disconnect from Android.
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&pkt.payload) {
+                            match val.get("cmd").and_then(|c| c.as_str()) {
+                                Some("video_transform") => {
+                                    if let Some(rot) = val.get("rotation").and_then(|v| v.as_u64())
+                                    {
+                                        let norm = ((rot % 360) as u16) / 90 * 90;
+                                        rotation_deg.store(norm, Ordering::Relaxed);
+                                    }
+                                    if let Some(fh) = val.get("flip_h").and_then(|v| v.as_bool()) {
+                                        flip_h.store(fh, Ordering::Relaxed);
+                                    }
+                                    if let Some(fv) = val.get("flip_v").and_then(|v| v.as_bool()) {
+                                        flip_v.store(fv, Ordering::Relaxed);
+                                    }
+                                    if let Some(zm) = val.get("zoom_x100").and_then(|v| v.as_u64())
+                                    {
+                                        crop_zoom_x100
+                                            .store((zm as u16).clamp(100, 250), Ordering::Relaxed);
+                                    }
+                                }
+                                Some("disconnect") => {
+                                    last_any_rx = None;
+                                    active_tier.store(0, Ordering::Relaxed);
+                                    #[cfg(windows)]
+                                    {
+                                        last_video_rx = None;
+                                        drop(live_vcam.take());
+                                        vcam_active.store(false, Ordering::Release);
+                                        if let Ok(mut s) = vcam_status.lock() {
+                                            *s = "Standby — camera appears in apps only while phone is live"
+                                                .into();
+                                        }
+                                        if let Ok(mut pf) = preview_frame.try_lock() {
+                                            pf.bgra.clear();
+                                            pf.width = 0;
+                                            pf.height = 0;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -939,7 +1030,8 @@ async fn run_engine_loop(
     }
 
     #[cfg(windows)]
-    drop(_live_vcam);
+    drop(live_vcam);
+    vcam_active.store(false, Ordering::Release);
     drop(tcp_listener);
 }
 

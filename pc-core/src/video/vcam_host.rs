@@ -1,5 +1,5 @@
-//! Windows 11 `MFCreateVirtualCamera` lifecycle host controller & shared
-//! COM CLSID constants for both `pc-vcam-mf.dll` (Win11) and `pc-vcam-ds.dll` (Win10).
+//! Windows 11 `MFCreateVirtualCamera` lifecycle host controller & COM CLSID
+//! for `pc-vcam-mf.dll`.
 
 use thiserror::Error;
 
@@ -7,11 +7,6 @@ use thiserror::Error;
 ///
 /// Must match `kVcamMfClsid` in `pc-vcam-mf/src/dllmain.cpp`.
 pub const VCAM_MF_CLSID_STR: &str = "{B7E4F9A1-6C2D-4F18-9E3A-1D4C5B6E7F80}";
-
-/// COM CLSID implemented by `pc-vcam-ds.dll` (Windows 10 DirectShow fallback filter).
-///
-/// Must match `kVcamDsClsid` in `pc-vcam-ds/src/dllmain.cpp`.
-pub const VCAM_DS_CLSID_STR: &str = "{C8F5A0B2-7D3E-4A29-8F4B-2E5D6C7F8091}";
 
 #[derive(Debug, Error)]
 pub enum VirtualCameraError {
@@ -44,8 +39,9 @@ pub fn is_mf_virtual_camera_supported() -> bool {
 /// `pc-vcam-mf.dll`.
 #[cfg(windows)]
 pub struct Win11VirtualCamera {
-    vcam: windows::Win32::Media::MediaFoundation::IMFVirtualCamera,
+    vcam: Option<windows::Win32::Media::MediaFoundation::IMFVirtualCamera>,
     started: bool,
+    com_initialized: bool,
 }
 
 #[cfg(windows)]
@@ -59,16 +55,19 @@ impl Win11VirtualCamera {
             MFCreateVirtualCamera, MFVirtualCameraAccess_CurrentUser,
             MFVirtualCameraLifetime_Session, MFVirtualCameraType_SoftwareCameraSource,
         };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
         use windows::core::HSTRING;
 
         if !is_mf_virtual_camera_supported() {
             return Err(VirtualCameraError::UnsupportedOs);
         }
 
+        let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+
         let name_h = HSTRING::from(friendly_name);
         let clsid_h = HSTRING::from(VCAM_MF_CLSID_STR);
 
-        let vcam = unsafe {
+        let vcam = match unsafe {
             MFCreateVirtualCamera(
                 MFVirtualCameraType_SoftwareCameraSource,
                 MFVirtualCameraLifetime_Session,
@@ -77,33 +76,50 @@ impl Win11VirtualCamera {
                 &clsid_h,
                 None,
             )
-        }
-        .map_err(|e| VirtualCameraError::Platform(e.to_string()))?;
+        } {
+            Ok(v) => v,
+            Err(e) => {
+                if com_initialized {
+                    unsafe { CoUninitialize() };
+                }
+                return Err(VirtualCameraError::Platform(e.to_string()));
+            }
+        };
 
         Ok(Self {
-            vcam,
+            vcam: Some(vcam),
             started: false,
+            com_initialized,
         })
     }
 
     pub fn start(&mut self) -> Result<(), VirtualCameraError> {
-        unsafe { self.vcam.Start(None) }
-            .map_err(|e| VirtualCameraError::Platform(e.to_string()))?;
-        self.started = true;
+        if let Some(ref vcam) = self.vcam {
+            unsafe { vcam.Start(None) }.map_err(|e| VirtualCameraError::Platform(e.to_string()))?;
+            self.started = true;
+        }
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), VirtualCameraError> {
-        if self.started {
-            unsafe { self.vcam.Stop() }.map_err(|e| VirtualCameraError::Platform(e.to_string()))?;
+        if self.started
+            && let Some(ref vcam) = self.vcam
+        {
+            // For MFVirtualCameraLifetime_Session, Shutdown() unregisters & removes the camera cleanly.
+            let _ = unsafe { vcam.Stop() };
             self.started = false;
         }
         Ok(())
     }
 
     pub fn remove(mut self) -> Result<(), VirtualCameraError> {
-        let _ = self.stop();
-        unsafe { self.vcam.Remove() }.map_err(|e| VirtualCameraError::Platform(e.to_string()))?;
+        if let Some(vcam) = self.vcam.take() {
+            let res =
+                unsafe { vcam.Shutdown() }.map_err(|e| VirtualCameraError::Platform(e.to_string()));
+            self.started = false;
+            drop(vcam);
+            return res;
+        }
         Ok(())
     }
 }
@@ -111,9 +127,15 @@ impl Win11VirtualCamera {
 #[cfg(windows)]
 impl Drop for Win11VirtualCamera {
     fn drop(&mut self) {
-        if self.started {
-            let _ = unsafe { self.vcam.Stop() };
+        // Release the COM pointer BEFORE CoUninitialize() so Release() runs while COM is alive!
+        if let Some(vcam) = self.vcam.take() {
+            let _ = unsafe { vcam.Shutdown() };
             self.started = false;
+            drop(vcam);
+        }
+        if self.com_initialized {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+            self.com_initialized = false;
         }
     }
 }
@@ -132,5 +154,40 @@ mod tests {
                 "MFCreateVirtualCamera should be available on Windows 11"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires registered pc-vcam-mf.dll in HKLM (run locally on Windows 11)"]
+    fn live_win11_virtual_camera_starts_and_removes_cleanly() {
+        let mut vcam =
+            Win11VirtualCamera::create("WifiCam Camera").expect("create Win11 virtual camera");
+        vcam.start()
+            .expect("start Win11 virtual camera via FrameServer");
+        let while_live = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-PnpDevice | Where-Object { $_.FriendlyName -match 'WifiCam' } | Select-Object Status, Class, FriendlyName | Format-Table -AutoSize",
+            ])
+            .output()
+            .expect("query pnp while live");
+        println!(
+            "WHILE LIVE:\n{}",
+            String::from_utf8_lossy(&while_live.stdout)
+        );
+        vcam.remove().expect("remove Win11 virtual camera");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let after_stop = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-PnpDevice | Where-Object { $_.FriendlyName -match 'WifiCam' } | Select-Object Status, Class, FriendlyName | Format-Table -AutoSize",
+            ])
+            .output()
+            .expect("query pnp after stop");
+        println!(
+            "AFTER STOP:\n{}",
+            String::from_utf8_lossy(&after_stop.stdout)
+        );
     }
 }

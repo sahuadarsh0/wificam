@@ -35,7 +35,7 @@ Prebuilt binaries are published on [GitHub Releases](https://github.com/sahuadar
 | Capability | WifiCam Studio | Typical Proprietary Alternatives |
 |---|---|---|
 | **Video Resolution & Codecs** | 1080p60 / 4K30 hardware **H.264 / HEVC / AV1** (`MediaCodec` Surface -> Windows Media Foundation) | Paywalled 720p/1080p, watermarks |
-| **Virtual Camera Driver** | Native **Windows 11 `MFCreateVirtualCamera`** (works in Windows Camera, Teams, Zoom, OBS, Chrome, Discord) + Windows 10 DirectShow fallback | Legacy DirectShow only (fails in UWP/Store apps) |
+| **Virtual Camera Driver** | Native **Windows 11 `MFCreateVirtualCamera`** — dynamic session-scoped (appears in Chrome, Meet, Teams, Zoom, OBS, Discord, and Windows Camera *only* while your phone is live, disappearing cleanly when disconnected) | Legacy DirectShow only (stays permanently listed and shows black when offline) |
 | **Audio Pipeline** | **48 kHz** Oboe AAudio exclusive capture -> raw PCM16 over USB / **Opus 1.6.1** with In-Band FEC & PLC over Wi-Fi -> **WebRTC AEC3** + **RNNoise** / DeepFilterNet3 -> PI clock-drift micro-resampler -> MMCSS Pro Audio WASAPI | Robotic audio, clipping, speaker echo, long-call clock drift |
 | **Transports & Failover** | 4-tier: **USB AOA** (zero-setup plug-and-play) -> **USB `adb reverse`** -> **Wi-Fi LAN** (E2E encrypted) -> **Bluetooth Classic RFCOMM** audio failover | Single transport or manual IP entry |
 | **Fast Wireless Pairing** | **Instant Local QR Code Scan** (`wificam://pair?...` via Camera2 + open-source ZXing Core, zero Play Services) + explicit TOFU consent + mDNS auto-discovery | Manual IP typing or cloud sign-in |
@@ -60,8 +60,7 @@ Windows PC Core (Rust 1.100, Edition 2024 — pc-core + pc-core-ffi)
  ├── Privacy: Win32 WTS_SESSION_LOCK (Win+L) Guard -> NV12 Privacy Slate + Mic Mute
  └── C-ABI DLL (pc_core_ffi.dll)
         ├──► WinUI 3 Desktop Studio Console (pc-ui — .NET 10, Windows App SDK 2.7, Mica, QRCoder)
-        ├──► Windows 11 Media Foundation Virtual Camera COM DLL (pc-vcam-mf — C++23)
-        └──► Windows 10 DirectShow Virtual Camera Fallback DLL (pc-vcam-ds — C++23)
+        └──► Windows 11 Media Foundation Virtual Camera COM DLL (pc-vcam-mf — C++23, dynamic session-scoped)
 ```
 
 ---
@@ -72,8 +71,7 @@ Windows PC Core (Rust 1.100, Edition 2024 — pc-core + pc-core-ffi)
 - `proto/PROTOCOL.md` & `proto/golden_vectors.json` — Wire Protocol v2 specification and cross-language Rust <-> Kotlin golden byte vectors.
 - `pc-core/` — Rust 2024 real-time engine (protocol, P-256/AES-256-GCM security, audio DSP, Media Foundation video decoder, seqlock framebus, 4-tier transports, `StudioEngine`, `SessionLockMonitor`).
 - `pc-core-ffi/` — Rust C-ABI `cdylib` (`pc_core_ffi.dll`) bridging `pc-core` into WinUI 3.
-- `pc-vcam-mf/` — C++23 Windows 11 Media Foundation Virtual Camera COM source (`IMFMediaSourceEx` / `MFCreateVirtualCamera`).
-- `pc-vcam-ds/` — C++23 Windows 10 DirectShow Virtual Camera fallback filter (`IBaseFilter` / `IAMStreamConfig`).
+- `pc-vcam-mf/` — C++23 Windows 11 Media Foundation Virtual Camera COM source (`IMFActivate` + `IMFMediaSource2` / `MFCreateVirtualCamera`, active only while phone is live).
 - `pc-vcam-common/` — Shared C/C++/Rust lock-free seqlock shared-memory framebus header (`framebus_shm.h`).
 - `pc-ui/` — Native Windows 11 **WinUI 3** Studio Console (`.NET 10`, `Windows App SDK 2.7.0`, Mica backdrop, live `QRCoder` QR pairing code, 16-segment broadcast LED VU meter, DSP & privacy controls).
 - `android-app/` — Android Studio Gradle 9.7 / Kotlin 2.2 / Jetpack Compose Material 3 app with C++20 Oboe JNI, Camera2 + MediaCodec H.264/HEVC/AV1, ZXing Core QR Scanner Mode, and 0-nit OLED Curtain Mode.
@@ -97,13 +95,10 @@ cargo test --workspace
 cargo build --release -p pc-core-ffi
 ```
 
-### 2. Virtual Camera COM DLLs (C++23)
+### 2. Virtual Camera COM DLL (C++23)
 ```bash
 cmake -S pc-vcam-mf -B pc-vcam-mf/build -G "Visual Studio 18 2026" -A x64
 cmake --build pc-vcam-mf/build --config Release
-
-cmake -S pc-vcam-ds -B pc-vcam-ds/build -G "Visual Studio 18 2026" -A x64
-cmake --build pc-vcam-ds/build --config Release
 ```
 Register locally for testing in an elevated PowerShell window:
 ```powershell

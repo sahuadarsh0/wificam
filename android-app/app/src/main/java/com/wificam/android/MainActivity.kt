@@ -418,6 +418,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopStreaming() {
+        // Notify PC immediately so Windows removes the virtual camera without waiting for timeout.
+        runCatching {
+            transportManager.enqueuePacket(
+                WirePacket(
+                    streamType = StreamType.Control,
+                    flags = PacketFlags.NONE,
+                    seq = (controlSeq++).toUInt(),
+                    ptsUs = System.nanoTime() / 1_000L,
+                    payload = """{"cmd":"disconnect"}""".toByteArray(Charsets.UTF_8),
+                )
+            )
+        }
         cameraController.stopCamera()
         videoEncoder?.stop()
         videoEncoder = null

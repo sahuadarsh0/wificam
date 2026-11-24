@@ -3,8 +3,7 @@
 // Shared C++23 / Rust binary contract for the lock-free triple-buffered
 // virtual camera framebus (`Global\WifiCamVcamShm`).
 //
-// Both `pc-vcam-mf.dll` (Windows 11 Frame Server) and `pc-vcam-ds.dll`
-// (Windows 10 DirectShow fallback) read frames written by Rust `pc-core`
+// `pc-vcam-mf.dll` (Windows 11 Frame Server) reads frames written by Rust `pc-core`
 // using an atomic seqlock — zero cross-process mutexes, zero deadlocks.
 
 #include <atomic>

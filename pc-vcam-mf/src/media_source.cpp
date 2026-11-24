@@ -325,30 +325,49 @@ STDMETHODIMP WifiCamMediaStream::RequestSample(IUnknown* token) {
             meta.payload_bytes >= target_nv12_bytes) {
             std::memcpy(dst_ptr, scratch_.data(), target_nv12_bytes);
         } else {
-            // Fast nearest-neighbor NV12 resize so any phone resolution (360p..4K) fills the virtual camera cleanly.
+            // Aspect-preserving NV12 letterbox/pillarbox resize so any phone resolution or 90-deg rotation stays unstretched!
             const uint8_t* src_y = scratch_.data();
             const size_t src_y_bytes = static_cast<size_t>(meta.stride) * meta.height;
             const uint8_t* src_uv = scratch_.data() + src_y_bytes;
             uint8_t* dst_y = dst_ptr;
             uint8_t* dst_uv = dst_ptr + static_cast<size_t>(width_) * height_;
             if (meta.payload_bytes >= src_y_bytes + static_cast<size_t>(meta.stride) * (meta.height / 2)) {
-                for (uint32_t y = 0; y < height_; ++y) {
-                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * meta.height) / height_);
+                // Fill black matte background (Y=16, UV=128)
+                std::memset(dst_y, 16, static_cast<size_t>(width_) * height_);
+                std::memset(dst_uv, 128, static_cast<size_t>(width_) * (height_ / 2));
+
+                uint32_t fit_w = width_;
+                uint32_t fit_h = height_;
+                const uint64_t lhs = static_cast<uint64_t>(meta.width) * height_;
+                const uint64_t rhs = static_cast<uint64_t>(width_) * meta.height;
+                if (lhs > rhs) {
+                    fit_w = width_;
+                    fit_h = std::max<uint32_t>(2, static_cast<uint32_t>((rhs / meta.width) & ~1ULL));
+                } else if (lhs < rhs) {
+                    fit_h = height_;
+                    fit_w = std::max<uint32_t>(2, static_cast<uint32_t>((lhs / meta.height) & ~1ULL));
+                }
+                const uint32_t off_x = ((width_ - fit_w) / 2) & ~1u;
+                const uint32_t off_y = ((height_ - fit_h) / 2) & ~1u;
+
+                for (uint32_t y = 0; y < fit_h; ++y) {
+                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * meta.height) / fit_h);
                     const uint8_t* srow = src_y + static_cast<size_t>(sy) * meta.stride;
-                    uint8_t* drow = dst_y + static_cast<size_t>(y) * width_;
-                    for (uint32_t x = 0; x < width_; ++x) {
-                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / width_);
+                    uint8_t* drow = dst_y + static_cast<size_t>(off_y + y) * width_ + off_x;
+                    for (uint32_t x = 0; x < fit_w; ++x) {
+                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / fit_w);
                         drow[x] = srow[sx];
                     }
                 }
-                const uint32_t uv_h = height_ / 2;
+                const uint32_t fit_uv_h = fit_h / 2;
                 const uint32_t src_uv_h = meta.height / 2;
-                for (uint32_t y = 0; y < uv_h; ++y) {
-                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * src_uv_h) / uv_h);
+                const uint32_t off_uv_y = off_y / 2;
+                for (uint32_t y = 0; y < fit_uv_h; ++y) {
+                    const uint32_t sy = static_cast<uint32_t>((static_cast<uint64_t>(y) * src_uv_h) / fit_uv_h);
                     const uint8_t* srow = src_uv + static_cast<size_t>(sy) * meta.stride;
-                    uint8_t* drow = dst_uv + static_cast<size_t>(y) * width_;
-                    for (uint32_t x = 0; x < width_; x += 2) {
-                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / width_) & ~1u;
+                    uint8_t* drow = dst_uv + static_cast<size_t>(off_uv_y + y) * width_ + off_x;
+                    for (uint32_t x = 0; x < fit_w; x += 2) {
+                        const uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * meta.width) / fit_w) & ~1u;
                         drow[x] = srow[sx];
                         drow[x + 1] = srow[sx + 1];
                     }
@@ -884,7 +903,10 @@ WifiCamActivate::WifiCamActivate() {
 }
 
 WifiCamActivate::~WifiCamActivate() {
-    ShutdownObject();
+    // NEVER call source_->Shutdown() here! FrameServer releases IMFActivate
+    // immediately after ActivateObject() while keeping the returned IMFMediaSource alive.
+    source_.Reset();
+    attrs_.Reset();
     g_dll_objects.fetch_sub(1, std::memory_order_relaxed);
 }
 

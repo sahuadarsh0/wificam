@@ -56,14 +56,11 @@ jobs:
         shell: pwsh
         run: cargo build --release -p pc-core-ffi
 
-      - name: Build C++23 Virtual Camera COM DLLs (MF + DirectShow)
+      - name: Build C++23 Windows 11 Media Foundation Virtual Camera COM DLL
         shell: pwsh
         run: |
           cmake -S pc-vcam-mf -B pc-vcam-mf/build -A x64
           cmake --build pc-vcam-mf/build --config Release
-
-          cmake -S pc-vcam-ds -B pc-vcam-ds/build -A x64
-          cmake --build pc-vcam-ds/build --config Release
 
       - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@v4
@@ -91,8 +88,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$stage\vcam" | Out-Null
           Copy-Item -Recurse -Force "pc-ui\bin\x64\Release\net10.0-windows10.0.26100.0\win-x64\*" "$stage\"
           Copy-Item -Force "pc-vcam-mf\build\Release\pc-vcam-mf.dll" "$stage\vcam\"
-          Copy-Item -Force "pc-vcam-ds\build\Release\pc-vcam-ds.dll" "$stage\vcam\"
           Copy-Item -Force "installer\register-vcam.ps1" "$stage\"
+          Copy-Item -Force "installer\install-virtual-mic.ps1" "$stage\"
           Copy-Item -Force "LICENSE" "$stage\"
           Compress-Archive -Path "$stage\*" -DestinationPath "dist\WifiCam-Studio-${{ steps.meta.outputs.tag }}-Windows-x64-portable.zip" -Force
 
