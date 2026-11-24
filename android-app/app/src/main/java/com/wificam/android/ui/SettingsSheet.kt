@@ -75,6 +75,7 @@ fun SettingsSheet(
     onSelectCodec: (AndroidVideoCodec) -> Unit,
     onSelectAntibanding: (Int) -> Unit,
     onOpenQrScanner: () -> Unit,
+    onReconnect: () -> Unit,
     onUnpair: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -163,7 +164,25 @@ fun SettingsSheet(
                     style = MaterialTheme.typography.bodyMedium,
                     color = StudioTokens.InkPrimary,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.isPaired && !state.isStreaming) {
+                        Button(
+                            onClick = {
+                                onDismiss()
+                                onReconnect()
+                            },
+                            shape = RoundedCornerShape(StudioTokens.RadiusSm),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StudioTokens.StatusLive,
+                                contentColor = StudioTokens.InkOnAccent,
+                            ),
+                        ) {
+                            Text("Reconnect")
+                        }
+                    }
                     Button(
                         onClick = {
                             onDismiss()
@@ -175,7 +194,7 @@ fun SettingsSheet(
                             contentColor = StudioTokens.InkOnAccent,
                         ),
                     ) {
-                        Text(if (state.isPaired) "Pair Another PC (QR)" else "Scan PC QR Code")
+                        Text(if (state.isPaired) "Pair New PC" else "Scan PC QR")
                     }
                     if (state.isPaired) {
                         OutlinedButton(

@@ -170,6 +170,7 @@ class MainActivity : ComponentActivity() {
                         val next = !uiState.value.isVideoPaused
                         uiState.update { it.copy(isVideoPaused = next) }
                         videoEncoder?.setPaused(next)
+                        restartCameraPipeline()
                     },
                     onToggleMicMute = {
                         val next = !uiState.value.isMicMuted
@@ -256,12 +257,12 @@ class MainActivity : ComponentActivity() {
                         startQrAnalyzer()
                     },
                     onCloseQrScanner = {
-                        stopQrAnalyzer()
+                        // Dismiss overlay immediately before tearing down Camera2 & ImageReader so UI never freezes.
                         uiState.update { it.copy(isQrScannerOpen = false, pendingConsent = null) }
+                        stopQrAnalyzer()
                         restartCameraPipeline()
                     },
                     onApproveQrPairing = { info ->
-                        stopQrAnalyzer()
                         saveRememberedHost(info.hostName, info.ip, info.controlPort, info.mediaUdpPort)
                         uiState.update {
                             it.copy(
@@ -272,16 +273,16 @@ class MainActivity : ComponentActivity() {
                                 pairedHostIp = info.ip,
                             )
                         }
+                        stopQrAnalyzer()
                         transportManager.connectFromQrPairing(info)
                         if (!uiState.value.isStreaming) {
-                            toggleStreaming()
+                            startStreaming()
                         }
                     },
                     onRejectQrPairing = {
                         uiState.update { it.copy(pendingConsent = null) }
                     },
                     onManualIpConnect = { ip ->
-                        stopQrAnalyzer()
                         saveRememberedHost("LAN PC", ip, Brand.DEFAULT_CONTROL_PORT, Brand.DEFAULT_MEDIA_UDP_PORT)
                         uiState.update {
                             it.copy(
@@ -292,23 +293,27 @@ class MainActivity : ComponentActivity() {
                                 pairedHostIp = ip,
                             )
                         }
+                        stopQrAnalyzer()
                         transportManager.connectWifi(ip)
                         if (!uiState.value.isStreaming) {
-                            toggleStreaming()
+                            startStreaming()
                         }
                     },
                     onConnectDiscoveredHost = { host ->
                         saveRememberedHost(host.name, host.ip, host.controlPort, host.mediaUdpPort)
                         uiState.update {
                             it.copy(
+                                isQrScannerOpen = false,
+                                pendingConsent = null,
                                 isPaired = true,
                                 pairedHostName = host.name,
                                 pairedHostIp = host.ip,
                             )
                         }
+                        stopQrAnalyzer()
                         transportManager.connectWifi(host.ip, host.controlPort, host.mediaUdpPort)
                         if (!uiState.value.isStreaming) {
-                            toggleStreaming()
+                            startStreaming()
                         }
                     },
                     onToggleOledCurtain = {
@@ -351,8 +356,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleStreaming() {
-        if (uiState.value.isStreaming) {
+        val st = uiState.value
+        if (st.isStreaming) {
             stopStreaming()
+        } else if (!st.isPaired) {
+            // If not paired yet, open QR scanner directly instead of starting an unrouted stream.
+            uiState.update { it.copy(isQrScannerOpen = true, isSettingsOpen = false, pendingConsent = null) }
+            startQrAnalyzer()
         } else {
             startStreaming()
         }
@@ -408,16 +418,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopStreaming() {
+        cameraController.stopCamera()
         videoEncoder?.stop()
         videoEncoder = null
         audioEngine?.stop()
         audioEngine?.release()
         audioEngine = null
-        uiState.update { it.copy(isStreaming = false, rmsDbfsX10 = -960) }
+        transportManager.disconnect()
+        uiState.update { it.copy(isStreaming = false, rmsDbfsX10 = -960, tier = ActiveTransportTier.DISCONNECTED) }
         startService(Intent(this, StreamForegroundService::class.java).apply {
             action = StreamForegroundService.ACTION_STOP
         })
-        restartCameraPipeline()
     }
 
     private fun startQrAnalyzer() {
@@ -452,6 +463,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopQrAnalyzer() {
+        // CRITICAL: Always stop Camera2 BEFORE closing ImageReader to avoid Camera2 surface deadlock!
+        cameraController.stopCamera()
         runCatching { qrImageReader?.close() }
         qrImageReader = null
         qrThread?.quitSafely()
@@ -461,14 +474,23 @@ class MainActivity : ComponentActivity() {
     private fun restartCameraPipeline() {
         if (!hasRequiredPermissions()) return
         val st = uiState.value
-        val encSurface = if (st.isStreaming) runCatching { videoEncoder?.start() }.getOrNull() else null
+        val cameraShouldRun = (st.isStreaming && !st.isVideoPaused) || st.isQrScannerOpen
+        if (!cameraShouldRun) {
+            cameraController.stopCamera()
+            return
+        }
+        val encSurface = if (st.isStreaming && !st.isVideoPaused) {
+            runCatching { videoEncoder?.start() }.getOrNull()
+        } else {
+            null
+        }
         cameraController.startCamera(
             cameraId = st.activeLensId,
             targetFps = st.fps,
             antibandingHz = st.antibandingHz,
             previewSurface = previewSurface,
             encoderSurface = encSurface,
-            analysisSurface = qrImageReader?.surface,
+            analysisSurface = if (st.isQrScannerOpen) qrImageReader?.surface else null,
         )
     }
 

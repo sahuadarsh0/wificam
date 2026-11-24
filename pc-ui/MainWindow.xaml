@@ -149,7 +149,16 @@
                                 </Border>
                             </Grid>
 
-                            <TextBlock x:Name="VirtualMicStatusText" Text="Virtual Mic Sink: Detecting..." FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioInkSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="VirtualMicStatusText" Grid.Column="0" VerticalAlignment="Center" Text="Virtual Mic Sink: Detecting..." FontFamily="Cascadia Mono" FontSize="11" Foreground="{StaticResource StudioInkSecondaryBrush}" TextWrapping="Wrap" />
+                                <Button x:Name="SetupVirtualMicButton" Grid.Column="1" Content="Setup Virtual Mic" Background="{StaticResource StudioAccentBrush}" Foreground="{StaticResource StudioInkOnAccentBrush}" FontWeight="SemiBold" FontSize="11" CornerRadius="8" Padding="10,6" Click="OnSetupVirtualMicClick" />
+                                <Button x:Name="RefreshVirtualMicButton" Grid.Column="2" Content="Refresh" FontSize="11" CornerRadius="8" Padding="10,6" Click="OnRefreshVirtualMicClick" />
+                            </Grid>
                         </StackPanel>
                     </Border>
                 </StackPanel>

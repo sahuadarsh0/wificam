@@ -163,7 +163,14 @@ public sealed partial class MainWindow : Window
         PcNameText.Text = $"PC: {Environment.MachineName}";
         LanAddressText.Text = $"Address: {snap.HostIp} • TCP {snap.ControlPort} / UDP {snap.MediaUdpPort}";
         FingerprintText.Text = $"Security ID: {snap.HostFingerprint}";
-        VirtualMicStatusText.Text = $"Virtual Mic Sink: {snap.VirtualMicName}";
+        VirtualMicStatusText.Text = snap.VirtualMicConnected
+            ? snap.VirtualMicName
+            : $"Virtual Mic: {snap.VirtualMicName}";
+        VirtualMicStatusText.Foreground = new SolidColorBrush(
+            snap.VirtualMicConnected
+                ? Color.FromArgb(255, 34, 197, 94)
+                : Color.FromArgb(255, 245, 158, 11));
+        SetupVirtualMicButton.Visibility = snap.VirtualMicConnected ? Visibility.Collapsed : Visibility.Visible;
 
         if (string.IsNullOrEmpty(UsbStatusText.Text) ||
             UsbStatusText.Text.StartsWith("Virtual Camera") ||
@@ -272,6 +279,47 @@ public sealed partial class MainWindow : Window
     private void OnUsbAdbClick(object sender, RoutedEventArgs e)
     {
         UsbStatusText.Text = _engine.TriggerAdbReverse();
+    }
+
+    private void OnSetupVirtualMicClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var script = System.IO.Path.Combine(AppContext.BaseDirectory, "install-virtual-mic.ps1");
+            if (System.IO.File.Exists(script))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
+                    UseShellExecute = true,
+                });
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "https://vb-audio.com/Cable/",
+                    UseShellExecute = true,
+                });
+            }
+            VirtualMicStatusText.Text = "Installing VB-Cable... Click 'Refresh' once driver setup finishes.";
+        }
+        catch (Exception ex)
+        {
+            VirtualMicStatusText.Text = $"Could not launch installer: {ex.Message}";
+        }
+    }
+
+    private void OnRefreshVirtualMicClick(object sender, RoutedEventArgs e)
+    {
+        if (_engineRunning)
+        {
+            _engine.Stop();
+            _engineRunning = _engine.Start();
+            UpdateStartStopButton();
+        }
+        RefreshTelemetry();
     }
 
     private void PushVideoTransform()

@@ -35,6 +35,7 @@ public sealed class StudioTelemetry
     [JsonPropertyName("media_udp_port")] public ushort MediaUdpPort { get; set; } = 7891;
     [JsonPropertyName("host_fingerprint")] public string HostFingerprint { get; set; } = "";
     [JsonPropertyName("pairing_uri")] public string PairingUri { get; set; } = "";
+    [JsonPropertyName("virtual_mic_connected")] public bool VirtualMicConnected { get; set; }
     [JsonPropertyName("virtual_mic_name")] public string VirtualMicName { get; set; } = "";
 }
 

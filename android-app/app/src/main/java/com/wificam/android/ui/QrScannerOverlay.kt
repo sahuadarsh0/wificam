@@ -72,6 +72,8 @@ import com.wificam.android.ui.theme.StudioTokens
 @Composable
 fun QrScannerOverlay(
     pendingConsent: PairingInfo?,
+    discoveredHosts: List<com.wificam.android.transport.DiscoveredHost>,
+    onConnectDiscoveredHost: (com.wificam.android.transport.DiscoveredHost) -> Unit,
     onApprovePairing: (PairingInfo) -> Unit,
     onRejectPairing: () -> Unit,
     onManualIpConnect: (String) -> Unit,
@@ -289,16 +291,44 @@ fun QrScannerOverlay(
                         color = StudioTokens.InkPrimary,
                         textAlign = TextAlign.Center,
                     )
-                    if (!showManualEntry) {
-                        TextButton(onClick = { showManualEntry = true }) {
-                            Icon(
-                                imageVector = Icons.Rounded.Keyboard,
-                                contentDescription = null,
-                                tint = StudioTokens.AccentPrimary,
-                                modifier = Modifier.size(18.dp),
+                    val discovered = discoveredHosts.firstOrNull()
+                    if (discovered != null) {
+                        OutlinedButton(
+                            onClick = { onConnectDiscoveredHost(discovered) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(StudioTokens.RadiusMd),
+                        ) {
+                            Text(
+                                text = "Tap to connect: ${discovered.name} (${discovered.ip})",
+                                color = StudioTokens.AccentPrimary,
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Enter PC IP manually", color = StudioTokens.AccentPrimary)
+                        }
+                    }
+                    if (!showManualEntry) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            TextButton(
+                                onClick = { showManualEntry = true },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Keyboard,
+                                    contentDescription = null,
+                                    tint = StudioTokens.AccentPrimary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Manual IP", color = StudioTokens.AccentPrimary)
+                            }
+                            OutlinedButton(
+                                onClick = onClose,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(StudioTokens.RadiusMd),
+                            ) {
+                                Text("Close", color = StudioTokens.InkPrimary)
+                            }
                         }
                     } else {
                         Row(
@@ -331,6 +361,9 @@ fun QrScannerOverlay(
                             ) {
                                 Text("Connect")
                             }
+                        }
+                        TextButton(onClick = onClose) {
+                            Text("Close Scanner", color = StudioTokens.InkSecondary)
                         }
                     }
                 }

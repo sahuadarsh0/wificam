@@ -542,7 +542,7 @@ mod tests {
         let reader_thread = thread::spawn(move || {
             let mut buf = vec![0u8; frame_len];
             let mut verified = 0usize;
-            while !done_reader.load(Ordering::Acquire) {
+            loop {
                 if let Some(meta) = reader.try_read_latest(&mut buf).unwrap()
                     && meta.desc.state == CameraState::Streaming
                 {
@@ -555,6 +555,9 @@ mod tests {
                         meta.desc.pts_us
                     );
                     verified += 1;
+                }
+                if done_reader.load(Ordering::Acquire) && verified > 0 {
+                    break;
                 }
             }
             verified
@@ -578,6 +581,9 @@ mod tests {
                     &frame,
                 )
                 .unwrap();
+            if i % 10 == 0 {
+                thread::yield_now();
+            }
         }
 
         done.store(true, Ordering::Release);

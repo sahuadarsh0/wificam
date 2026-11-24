@@ -45,6 +45,9 @@ class HardwareVideoEncoder(
     private var drainThread: Thread? = null
 
     fun start(): Surface {
+        inputSurface?.let { existing ->
+            if (running.get()) return existing
+        }
         val format = MediaFormat.createVideoFormat(config.codec.mimeType, config.width, config.height).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,

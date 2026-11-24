@@ -235,7 +235,7 @@ fun StudioCockpitScreen(
                     }
                 }
 
-                // Compact Quality & Codec Pill -> opens full Video Settings Sheet
+                // Single clean Quality & Codec Pill -> opens full Video Settings Sheet
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(StudioTokens.RadiusMd))
@@ -258,61 +258,11 @@ fun StudioCockpitScreen(
                         color = StudioTokens.InkPrimary,
                     )
                 }
-
-                // 1-Tap Fast Reconnect banner for last remembered PC
-                if (state.isPaired && !state.isStreaming && state.pairedHostIp.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(StudioTokens.RadiusMd))
-                            .background(StudioTokens.AccentPrimary.copy(alpha = 0.14f))
-                            .border(1.dp, StudioTokens.AccentPrimary.copy(alpha = 0.65f), RoundedCornerShape(StudioTokens.RadiusMd))
-                            .clickable(onClick = onQuickReconnect)
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = "Reconnect · ${state.pairedHostName}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StudioTokens.InkPrimary,
-                        )
-                        Text(
-                            text = "${state.pairedHostIp} · Tap",
-                            style = StudioTelemetryStyle.copy(fontSize = 11.sp),
-                            color = StudioTokens.AccentPrimary,
-                        )
-                    }
-                }
-
-                val firstHost = state.discoveredHosts.firstOrNull()
-                if (firstHost != null && !state.isStreaming && !state.isPaired) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(StudioTokens.RadiusMd))
-                            .background(StudioTokens.SurfaceElevated)
-                            .border(1.dp, StudioTokens.AccentPrimary.copy(alpha = 0.55f), RoundedCornerShape(StudioTokens.RadiusMd))
-                            .clickable { onConnectDiscoveredHost(firstHost) }
-                            .padding(horizontal = 14.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = "PC Found: ${firstHost.name}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StudioTokens.InkPrimary,
-                        )
-                        Text(
-                            text = "${firstHost.ip} · Tap to connect",
-                            style = StudioTelemetryStyle.copy(fontSize = 11.sp),
-                            color = StudioTokens.AccentPrimary,
-                        )
-                    }
-                }
             }
 
-            // 2. Framed Center Camera Preview Stage (not hidden behind HUD!)
+            val cameraShouldDisplay = (state.isStreaming && !state.isVideoPaused) || state.isQrScannerOpen
+
+            // 2. Framed Center Camera Preview Stage (OFF when not live or paused!)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -323,7 +273,16 @@ fun StudioCockpitScreen(
                     .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(18.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                if (state.hasPermissions) {
+                if (!state.hasPermissions) {
+                    PermissionGate(onRequestPermissions = onRequestPermissions)
+                } else if (!cameraShouldDisplay) {
+                    CameraOffStandbyStage(
+                        isPaired = state.isPaired,
+                        isVideoPaused = state.isStreaming && state.isVideoPaused,
+                        pairedHostName = state.pairedHostName,
+                        pairedHostIp = state.pairedHostIp,
+                    )
+                } else {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
@@ -386,8 +345,6 @@ fun StudioCockpitScreen(
                             }
                         },
                     )
-                } else {
-                    PermissionGate(onRequestPermissions = onRequestPermissions)
                 }
             }
 
@@ -482,19 +439,28 @@ fun StudioCockpitScreen(
                         onClick = onToggleVideoPause,
                     )
 
+                    val ctaLabel = when {
+                        state.isStreaming -> "STOP LIVE"
+                        state.isPaired -> "RECONNECT"
+                        else -> "CONNECT PC"
+                    }
                     Button(
-                        onClick = onToggleStream,
+                        onClick = if (!state.isStreaming && state.isPaired) onQuickReconnect else onToggleStream,
                         modifier = Modifier
                             .weight(1f)
                             .height(52.dp),
                         shape = RoundedCornerShape(StudioTokens.RadiusMd),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (state.isStreaming) StudioTokens.StatusAlert else StudioTokens.AccentPrimary,
+                            containerColor = when {
+                                state.isStreaming -> StudioTokens.StatusAlert
+                                state.isPaired -> StudioTokens.StatusLive
+                                else -> StudioTokens.AccentPrimary
+                            },
                             contentColor = if (state.isStreaming) StudioTokens.InkPrimary else StudioTokens.InkOnAccent,
                         ),
                     ) {
                         Text(
-                            text = if (state.isStreaming) "STOP" else "GO LIVE",
+                            text = ctaLabel,
                             style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp),
                         )
                     }
@@ -535,6 +501,7 @@ fun StudioCockpitScreen(
                 onSelectCodec = onSelectCodec,
                 onSelectAntibanding = onSelectAntibanding,
                 onOpenQrScanner = onOpenQrScanner,
+                onReconnect = onQuickReconnect,
                 onUnpair = onUnpair,
                 onDismiss = onCloseSettings,
             )
@@ -543,6 +510,8 @@ fun StudioCockpitScreen(
         if (state.isQrScannerOpen) {
             QrScannerOverlay(
                 pendingConsent = state.pendingConsent,
+                discoveredHosts = state.discoveredHosts,
+                onConnectDiscoveredHost = onConnectDiscoveredHost,
                 onApprovePairing = onApproveQrPairing,
                 onRejectPairing = onRejectQrPairing,
                 onManualIpConnect = onManualIpConnect,
@@ -557,6 +526,51 @@ fun StudioCockpitScreen(
                 onWake = onToggleOledCurtain,
             )
         }
+    }
+}
+
+@Composable
+private fun CameraOffStandbyStage(
+    isPaired: Boolean,
+    isVideoPaused: Boolean,
+    pairedHostName: String,
+    pairedHostIp: String,
+) {
+    Column(
+        modifier = Modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .clip(CircleShape)
+                .background(StudioTokens.SurfaceElevated)
+                .border(1.dp, StudioTokens.BorderSubtle, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.VideocamOff,
+                contentDescription = null,
+                tint = if (isVideoPaused) StudioTokens.StatusWarn else StudioTokens.InkSecondary,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Text(
+            text = if (isVideoPaused) "Camera Paused" else "Camera Off",
+            style = MaterialTheme.typography.titleMedium,
+            color = StudioTokens.InkPrimary,
+        )
+        Text(
+            text = when {
+                isVideoPaused -> "Your camera sensor is off while video is paused. Mic remains active."
+                isPaired -> "Saved PC: $pairedHostName ($pairedHostIp). Tap RECONNECT below to go live."
+                else -> "Camera stays off until you connect. Tap CONNECT PC below to scan your PC QR code."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = StudioTokens.InkSecondary,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
     }
 }
 

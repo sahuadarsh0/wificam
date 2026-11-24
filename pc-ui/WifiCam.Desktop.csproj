@@ -32,6 +32,10 @@
     <Content Include="Assets\wificam-logo.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <None Include="..\installer\install-virtual-mic.ps1" Condition="Exists('..\installer\install-virtual-mic.ps1')">
+      <Link>install-virtual-mic.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <!-- Bundle the Rust pc_core_ffi.dll alongside WifiCam.Desktop.exe -->

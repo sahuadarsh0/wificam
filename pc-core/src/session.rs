@@ -66,6 +66,7 @@ pub struct StudioTelemetry {
     pub media_udp_port: u16,
     pub host_fingerprint: String,
     pub pairing_uri: String,
+    pub virtual_mic_connected: bool,
     pub virtual_mic_name: String,
 }
 
@@ -260,7 +261,8 @@ pub struct StudioEngine {
     crop_zoom_x100: Arc<AtomicU16>,
     pairing: PairingPayload,
     host_fingerprint: String,
-    virtual_mic_name: String,
+    virtual_mic_connected: Arc<AtomicBool>,
+    virtual_mic_name: Arc<Mutex<String>>,
     worker: Option<JoinHandle<()>>,
     _mdns: Option<MdnsAdvertiser>,
 }
@@ -283,17 +285,22 @@ impl StudioEngine {
         };
 
         #[cfg(windows)]
-        let virtual_mic_name = crate::audio::enumerate_render_devices()
+        let (vmic_ok, vmic_name) = crate::audio::enumerate_render_devices()
             .ok()
             .and_then(|devs| {
                 crate::audio::select_safe_render_device(&devs, None, false)
                     .ok()
-                    .map(|d| d.friendly_name.clone())
+                    .map(|d| (true, d.friendly_name.clone()))
             })
-            .unwrap_or_else(|| "Not detected (Install VB-Cable / Virtual Audio Driver)".into());
+            .unwrap_or_else(|| {
+                (
+                    false,
+                    "Not installed — click 'Setup Virtual Mic' to enable Windows mic input".into(),
+                )
+            });
 
         #[cfg(not(windows))]
-        let virtual_mic_name = "Virtual Mic".into();
+        let (vmic_ok, vmic_name) = (false, "Virtual Mic".to_string());
 
         Ok(Self {
             audio_state: AudioSharedState::new(),
@@ -314,7 +321,8 @@ impl StudioEngine {
             crop_zoom_x100: Arc::new(AtomicU16::new(100)),
             pairing,
             host_fingerprint,
-            virtual_mic_name,
+            virtual_mic_connected: Arc::new(AtomicBool::new(vmic_ok)),
+            virtual_mic_name: Arc::new(Mutex::new(vmic_name)),
             worker: None,
             _mdns: None,
         })
@@ -372,6 +380,8 @@ impl StudioEngine {
         let flip_h = self.flip_h.clone();
         let flip_v = self.flip_v.clone();
         let crop_zoom_x100 = self.crop_zoom_x100.clone();
+        let virtual_mic_connected = self.virtual_mic_connected.clone();
+        let virtual_mic_name = self.virtual_mic_name.clone();
         let ctrl_port = self.pairing.control_port;
         let udp_port = self.pairing.media_udp_port;
 
@@ -400,6 +410,8 @@ impl StudioEngine {
                         flip_h,
                         flip_v,
                         crop_zoom_x100,
+                        virtual_mic_connected,
+                        virtual_mic_name,
                         ctrl_port,
                         udp_port,
                     )
@@ -533,7 +545,12 @@ impl StudioEngine {
             media_udp_port: self.pairing.media_udp_port,
             host_fingerprint: self.host_fingerprint.clone(),
             pairing_uri: self.pairing.to_uri(),
-            virtual_mic_name: self.virtual_mic_name.clone(),
+            virtual_mic_connected: self.virtual_mic_connected.load(Ordering::Relaxed),
+            virtual_mic_name: self
+                .virtual_mic_name
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or_default(),
         }
     }
 }
@@ -572,6 +589,8 @@ async fn run_engine_loop(
     flip_h: Arc<AtomicBool>,
     flip_v: Arc<AtomicBool>,
     crop_zoom_x100: Arc<AtomicU16>,
+    virtual_mic_connected: Arc<AtomicBool>,
+    virtual_mic_name: Arc<Mutex<String>>,
     ctrl_port: u16,
     udp_port: u16,
 ) {
@@ -586,17 +605,42 @@ async fn run_engine_loop(
 
     // Start safe WASAPI virtual-mic render thread if a virtual cable is installed.
     #[cfg(windows)]
-    let _wasapi_handle = crate::audio::enumerate_render_devices()
-        .ok()
-        .and_then(|devs| {
-            crate::audio::select_safe_render_device(&devs, None, false)
-                .ok()
-                .map(|d| d.id.clone())
-        })
-        .and_then(|dev_id| {
-            let cons = audio_cons_opt.take()?;
-            crate::audio::spawn_wasapi_render_thread(dev_id, cons).ok()
-        });
+    let _wasapi_handle = {
+        let found = crate::audio::enumerate_render_devices()
+            .ok()
+            .and_then(|devs| {
+                crate::audio::select_safe_render_device(&devs, None, false)
+                    .ok()
+                    .cloned()
+            });
+        match found {
+            Some(dev) => {
+                let handle = audio_cons_opt.take().and_then(|cons| {
+                    crate::audio::spawn_wasapi_render_thread(dev.id.clone(), cons).ok()
+                });
+                if handle.is_some() {
+                    virtual_mic_connected.store(true, Ordering::Release);
+                    if let Ok(mut n) = virtual_mic_name.lock() {
+                        *n = format!(
+                            "Active: {} (Select CABLE Output as Mic in Meet / Teams / Zoom)",
+                            dev.friendly_name
+                        );
+                    }
+                }
+                handle
+            }
+            None => {
+                virtual_mic_connected.store(false, Ordering::Release);
+                if let Ok(mut n) = virtual_mic_name.lock() {
+                    *n = "Not installed — click 'Setup Virtual Mic' to enable Windows mic input"
+                        .into();
+                }
+                None
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let _ = (&virtual_mic_connected, &virtual_mic_name);
 
     // Initialize shared-memory virtual camera framebus and publish initial slate BEFORE
     // instantiating the Windows 11 Media Foundation Virtual Camera so FrameServer sees valid frames immediately.
