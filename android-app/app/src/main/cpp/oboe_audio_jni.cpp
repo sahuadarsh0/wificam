@@ -60,7 +60,7 @@ public:
             ->setSampleRate(kSampleRate)
             ->setInputPreset(unprocessed_preset
                                  ? oboe::InputPreset::Unprocessed
-                                 : oboe::InputPreset::VoiceRecognition)
+                                 : oboe::InputPreset::VoiceCommunication)
             ->setDataCallback(this)
             ->setErrorCallback(this);
 

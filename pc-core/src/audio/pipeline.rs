@@ -47,7 +47,8 @@ impl AudioSharedState {
             // Default AEC off until user explicitly enables it so dry mic voice is never over-attenuated.
             aec_enabled: AtomicBool::new(false),
             denoise_mode: AtomicU8::new(DenoiseMode::RnNoise as u8),
-            gain_db_x10: AtomicI16::new(0),
+            // +8.0 dB default studio mic preamp so Android speech hits clear -14..-8 dBFS in Chrome/Meet/Zoom.
+            gain_db_x10: AtomicI16::new(80),
             peak_dbfs_x10: AtomicI16::new(-960),
             rms_dbfs_x10: AtomicI16::new(-960),
             vad_pct: AtomicU8::new(0),

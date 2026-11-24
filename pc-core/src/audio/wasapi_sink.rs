@@ -238,15 +238,15 @@ fn run_render_session(
         AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
         IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
     };
-    use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
     use windows::Win32::System::Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+        CoUninitialize,
     };
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
     use windows::core::HSTRING;
 
     const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
-    let _ = WAVE_FORMAT_EXTENSIBLE; // keep feature import checked
+    const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xFFFE;
 
     unsafe {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -264,32 +264,58 @@ fn run_render_session(
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|e| WasapiError::Platform(e.to_string()))?;
 
-            let fmt = WAVEFORMATEX {
-                wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
-                nChannels: 1,
-                nSamplesPerSec: AUDIO_SAMPLE_RATE,
-                nAvgBytesPerSec: AUDIO_SAMPLE_RATE * 4,
-                nBlockAlign: 4,
-                wBitsPerSample: 32,
-                cbSize: 0,
-            };
+            // Prefer the device's NATIVE shared-mode MixFormat (usually 48 kHz 2-ch 32-bit float on VB-Cable)
+            // so Windows Audio Engine copies samples bit-exact with zero AUTOCONVERTPCM glitches.
+            let mix_ptr = client
+                .GetMixFormat()
+                .map_err(|e| WasapiError::Platform(e.to_string()))?;
+            let mix = *mix_ptr;
+            let mix_is_48k_float = mix.nSamplesPerSec == AUDIO_SAMPLE_RATE
+                && mix.wBitsPerSample == 32
+                && mix.nChannels >= 1
+                && (mix.wFormatTag == WAVE_FORMAT_IEEE_FLOAT
+                    || mix.wFormatTag == WAVE_FORMAT_EXTENSIBLE_TAG);
 
-            // 10 ms buffer duration in 100-nanosecond units.
-            let buffer_duration_hns: i64 = 100_000;
-            let flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-
-            client
-                .Initialize(
+            // 40 ms shared buffer absorbs Wi-Fi jitter without audible pops or underruns.
+            let buffer_duration_hns: i64 = 400_000;
+            let out_channels: usize = if mix_is_48k_float {
+                let init_res = client.Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
-                    flags,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                     buffer_duration_hns,
                     0,
-                    &fmt,
+                    mix_ptr,
                     None,
-                )
-                .map_err(|e| WasapiError::Platform(e.to_string()))?;
+                );
+                CoTaskMemFree(Some(mix_ptr.cast()));
+                init_res.map_err(|e| WasapiError::Platform(e.to_string()))?;
+                mix.nChannels as usize
+            } else {
+                CoTaskMemFree(Some(mix_ptr.cast()));
+                let fmt = WAVEFORMATEX {
+                    wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
+                    nChannels: 2,
+                    nSamplesPerSec: AUDIO_SAMPLE_RATE,
+                    nAvgBytesPerSec: AUDIO_SAMPLE_RATE * 8,
+                    nBlockAlign: 8,
+                    wBitsPerSample: 32,
+                    cbSize: 0,
+                };
+                let flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+                client
+                    .Initialize(
+                        AUDCLNT_SHAREMODE_SHARED,
+                        flags,
+                        buffer_duration_hns,
+                        0,
+                        &fmt,
+                        None,
+                    )
+                    .map_err(|e| WasapiError::Platform(e.to_string()))?;
+                2
+            };
 
             let event = CreateEventW(None, false, false, None)
                 .map_err(|e| WasapiError::Platform(e.to_string()))?;
@@ -307,7 +333,10 @@ fn run_render_session(
 
             // Pre-fill initial silent buffer BEFORE Start() as required by WASAPI event-driven mode.
             if let Ok(ptr) = render.GetBuffer(buffer_frames) {
-                let dst = std::slice::from_raw_parts_mut(ptr.cast::<f32>(), buffer_frames as usize);
+                let dst = std::slice::from_raw_parts_mut(
+                    ptr.cast::<f32>(),
+                    (buffer_frames as usize) * out_channels,
+                );
                 dst.fill(0.0);
                 let _ = render.ReleaseBuffer(buffer_frames, 0);
             }
@@ -316,10 +345,13 @@ fn run_render_session(
                 .Start()
                 .map_err(|e| WasapiError::Platform(e.to_string()))?;
 
+            let mut mono_scratch = vec![0.0f32; buffer_frames as usize];
             let mut session_err = Ok(());
             while !stop.load(Ordering::Acquire) {
-                let wait = WaitForSingleObject(event, 100);
-                if wait != WAIT_OBJECT_0 {
+                // Wait up to 15 ms for WASAPI buffer event, but also poll padding on timeout so
+                // virtual cable drivers never stall if an event notification is missed.
+                let wait = WaitForSingleObject(event, 15);
+                if wait != WAIT_OBJECT_0 && consumer.slots() == 0 {
                     continue;
                 }
                 let padding = match client.GetCurrentPadding() {
@@ -333,6 +365,26 @@ fn run_render_session(
                 if frames_to_write == 0 {
                     continue;
                 }
+                let n_frames = frames_to_write as usize;
+                if mono_scratch.len() < n_frames {
+                    mono_scratch.resize(n_frames, 0.0);
+                }
+
+                let avail = consumer.slots().min(n_frames);
+                let mut copied = 0usize;
+                if avail > 0
+                    && let Ok(chunk) = consumer.read_chunk(avail)
+                {
+                    let (a, b) = chunk.as_slices();
+                    mono_scratch[..a.len()].copy_from_slice(a);
+                    mono_scratch[a.len()..a.len() + b.len()].copy_from_slice(b);
+                    copied = a.len() + b.len();
+                    chunk.commit_all();
+                }
+                if copied < n_frames {
+                    mono_scratch[copied..n_frames].fill(0.0);
+                }
+
                 let ptr = match render.GetBuffer(frames_to_write) {
                     Ok(p) => p,
                     Err(e) => {
@@ -341,22 +393,16 @@ fn run_render_session(
                     }
                 };
                 let dst =
-                    std::slice::from_raw_parts_mut(ptr.cast::<f32>(), frames_to_write as usize);
-
-                // Drain lock-free SPSC ring buffer; zero-fill any remaining tail on underrun.
-                let avail = consumer.slots().min(dst.len());
-                let mut copied = 0usize;
-                if avail > 0
-                    && let Ok(chunk) = consumer.read_chunk(avail)
-                {
-                    let (a, b) = chunk.as_slices();
-                    dst[..a.len()].copy_from_slice(a);
-                    dst[a.len()..a.len() + b.len()].copy_from_slice(b);
-                    copied = a.len() + b.len();
-                    chunk.commit_all();
-                }
-                if copied < dst.len() {
-                    dst[copied..].fill(0.0);
+                    std::slice::from_raw_parts_mut(ptr.cast::<f32>(), n_frames * out_channels);
+                if out_channels == 1 {
+                    dst.copy_from_slice(&mono_scratch[..n_frames]);
+                } else {
+                    for (i, &s) in mono_scratch[..n_frames].iter().enumerate() {
+                        let base = i * out_channels;
+                        for ch in 0..out_channels {
+                            dst[base + ch] = s;
+                        }
+                    }
                 }
 
                 if let Err(e) = render.ReleaseBuffer(frames_to_write, 0) {

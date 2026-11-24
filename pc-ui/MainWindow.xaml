@@ -210,9 +210,9 @@
                             <StackPanel Spacing="4">
                                 <Grid>
                                     <TextBlock Text="Microphone Gain" FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" />
-                                    <TextBlock x:Name="GainValueText" HorizontalAlignment="Right" Text="0.0 dB" FontFamily="Cascadia Mono" FontSize="12" Foreground="{StaticResource StudioInkPrimaryBrush}" />
+                                    <TextBlock x:Name="GainValueText" HorizontalAlignment="Right" Text="+8.0 dB" FontFamily="Cascadia Mono" FontSize="12" Foreground="{StaticResource StudioInkPrimaryBrush}" />
                                 </Grid>
-                                <Slider x:Name="GainSlider" Minimum="-12" Maximum="12" StepFrequency="0.5" Value="0" ValueChanged="OnGainChanged" />
+                                <Slider x:Name="GainSlider" Minimum="-12" Maximum="24" StepFrequency="0.5" Value="8" ValueChanged="OnGainChanged" />
                             </StackPanel>
 
                             <ToggleSwitch x:Name="LockPrivacyToggle"

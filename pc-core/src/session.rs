@@ -661,52 +661,284 @@ async fn run_engine_loop(
     #[cfg(not(windows))]
     let _ = (&virtual_mic_connected, &virtual_mic_name);
 
-    // Initialize shared-memory virtual camera framebus and publish initial slate BEFORE
-    // instantiating the Windows 11 Media Foundation Virtual Camera so FrameServer sees valid frames immediately.
+    // Spawn dedicated video decode + transform + Win11 Virtual Camera worker thread so
+    // heavy 1080p/4K video work NEVER blocks or starves real-time 48 kHz microphone audio!
     #[cfg(windows)]
-    let mut framebus = crate::video::FramebusWriter::create_default().ok();
-    #[cfg(windows)]
-    let mut active_codec = VideoCodecChoice::H264;
-    #[cfg(windows)]
-    let mut mf_decoder = crate::video::MfVideoDecoder::new(active_codec, 1920, 1080, 60).ok();
-
-    let mut slate_buf = vec![0u8; nv12_byte_len(1920, 1080)];
-    render_nv12_slate(1920, 1080, CameraState::Disconnected, &mut slate_buf);
-    #[cfg(windows)]
-    if let Some(ref mut fb) = framebus {
-        let _ = fb.write_frame(
-            FrameDescriptor {
-                state: CameraState::Disconnected,
-                width: 1920,
-                height: 1080,
-                stride: 1920,
-                pixel_format: PixelFormat::Nv12,
-                fps_num: 60,
-                fps_den: 1,
-                pts_us: 0,
-            },
-            &slate_buf,
-        );
+    enum VideoWorkMsg {
+        Frame {
+            stream_type: StreamType,
+            data: bytes::Bytes,
+            pts_us: u64,
+        },
+        Disconnect,
     }
-
-    // Phone-Link-style dynamic virtual camera lifecycle:
-    // Do NOT register/expose "WifiCam Camera" while idle. Create & Start it ONLY
-    // when a phone actually connects and delivers live video frames, and Remove()
-    // it immediately on disconnect / pause / lock so apps never see a black camera!
-    #[cfg(windows)]
-    let cam_name = format!("{APP_DISPLAY_NAME} Camera");
-    #[cfg(windows)]
-    let mut live_vcam: Option<crate::video::Win11VirtualCamera> = None;
-    #[cfg(windows)]
-    let mut last_video_rx: Option<std::time::Instant> = None;
-    #[cfg(windows)]
-    let mut last_vcam_retry: Option<std::time::Instant> = None;
-    let mut last_any_rx: Option<std::time::Instant> = None;
 
     vcam_active.store(false, Ordering::Release);
     if let Ok(mut s) = vcam_status.lock() {
         *s = "Standby — camera appears in apps only while phone is live".into();
     }
+
+    #[cfg(windows)]
+    let (video_tx, video_worker) = {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<VideoWorkMsg>(8);
+        let running_v = running.clone();
+        let video_paused_v = video_paused.clone();
+        let session_locked_v = session_locked.clone();
+        let video_width_v = video_width.clone();
+        let video_height_v = video_height.clone();
+        let vcam_active_v = vcam_active.clone();
+        let vcam_status_v = vcam_status.clone();
+        let preview_frame_v = preview_frame.clone();
+        let rotation_deg_v = rotation_deg.clone();
+        let flip_h_v = flip_h.clone();
+        let flip_v_v = flip_v.clone();
+        let crop_zoom_v = crop_zoom_x100.clone();
+
+        let worker = thread::Builder::new()
+            .name("wificam-video-worker".into())
+            .spawn(move || {
+                let mut framebus = crate::video::FramebusWriter::create_default().ok();
+                let mut active_codec = VideoCodecChoice::H264;
+                let mut mf_decoder =
+                    crate::video::MfVideoDecoder::new(active_codec, 1920, 1080, 60).ok();
+                let mut slate_buf = vec![0u8; nv12_byte_len(1920, 1080)];
+                render_nv12_slate(1920, 1080, CameraState::Disconnected, &mut slate_buf);
+                if let Some(ref mut fb) = framebus {
+                    let _ = fb.write_frame(
+                        FrameDescriptor {
+                            state: CameraState::Disconnected,
+                            width: 1920,
+                            height: 1080,
+                            stride: 1920,
+                            pixel_format: PixelFormat::Nv12,
+                            fps_num: 60,
+                            fps_den: 1,
+                            pts_us: 0,
+                        },
+                        &slate_buf,
+                    );
+                }
+
+                let cam_name = format!("{APP_DISPLAY_NAME} Camera");
+                let mut live_vcam: Option<crate::video::Win11VirtualCamera> = None;
+                let mut last_video_rx: Option<std::time::Instant> = None;
+                let mut last_vcam_retry: Option<std::time::Instant> = None;
+                let mut transform_scratch: Vec<u8> = Vec::with_capacity(1920 * 1080 * 3 / 2);
+                let mut preview_scratch: Vec<u8> = Vec::with_capacity(1280 * 720 * 4);
+                let mut preview_seq: u64 = 0;
+
+                while running_v.load(Ordering::Acquire) {
+                    let msg = rx.recv_timeout(std::time::Duration::from_millis(100));
+                    let paused = video_paused_v.load(Ordering::Relaxed);
+                    let locked = session_locked_v.load(Ordering::Relaxed);
+
+                    let video_timed_out = last_video_rx
+                        .map(|t| t.elapsed() > std::time::Duration::from_secs(3))
+                        .unwrap_or(false);
+                    if (paused || locked || video_timed_out) && live_vcam.is_some() {
+                        drop(live_vcam.take());
+                        vcam_active_v.store(false, Ordering::Release);
+                        if let Ok(mut s) = vcam_status_v.lock() {
+                            *s = if locked {
+                                "Privacy Locked (Win+L) — virtual camera hidden".into()
+                            } else if paused {
+                                "Camera Paused — virtual camera hidden".into()
+                            } else {
+                                "Standby — camera appears in apps only while phone is live".into()
+                            };
+                        }
+                        if video_timed_out {
+                            last_video_rx = None;
+                            if let Ok(mut pf) = preview_frame_v.try_lock() {
+                                pf.bgra.clear();
+                                pf.width = 0;
+                                pf.height = 0;
+                            }
+                        }
+                    }
+
+                    if paused || locked {
+                        let st = if locked {
+                            CameraState::Locked
+                        } else {
+                            CameraState::Paused
+                        };
+                        render_nv12_slate(1920, 1080, st, &mut slate_buf);
+                        if let Some(ref mut fb) = framebus {
+                            let _ = fb.write_frame(
+                                FrameDescriptor {
+                                    state: st,
+                                    width: 1920,
+                                    height: 1080,
+                                    stride: 1920,
+                                    pixel_format: PixelFormat::Nv12,
+                                    fps_num: 60,
+                                    fps_den: 1,
+                                    pts_us: 0,
+                                },
+                                &slate_buf,
+                            );
+                        }
+                    }
+
+                    match msg {
+                        Ok(VideoWorkMsg::Disconnect) => {
+                            last_video_rx = None;
+                            drop(live_vcam.take());
+                            vcam_active_v.store(false, Ordering::Release);
+                            if let Ok(mut s) = vcam_status_v.lock() {
+                                *s = "Standby — camera appears in apps only while phone is live"
+                                    .into();
+                            }
+                            if let Ok(mut pf) = preview_frame_v.try_lock() {
+                                pf.bgra.clear();
+                                pf.width = 0;
+                                pf.height = 0;
+                            }
+                        }
+                        Ok(VideoWorkMsg::Frame {
+                            stream_type,
+                            data,
+                            pts_us,
+                        }) => {
+                            if paused || locked {
+                                continue;
+                            }
+                            if let Some(want_codec) = stream_type_to_codec(stream_type)
+                                && want_codec != active_codec
+                            {
+                                active_codec = want_codec;
+                                mf_decoder = crate::video::MfVideoDecoder::new(
+                                    active_codec,
+                                    1920,
+                                    1080,
+                                    60,
+                                )
+                                .ok();
+                            }
+                            if let Some(ref mut dec) = mf_decoder
+                                && let Ok(frames) = dec.decode_access_unit(&data, pts_us)
+                            {
+                                for f in frames {
+                                    let rot = rotation_deg_v.load(Ordering::Relaxed);
+                                    let fh = flip_h_v.load(Ordering::Relaxed);
+                                    let fv = flip_v_v.load(Ordering::Relaxed);
+                                    let zm = crop_zoom_v.load(Ordering::Relaxed);
+                                    let needs_tx = rot != 0 || fh || fv || zm > 100;
+
+                                    let (pub_w, pub_h, pub_stride, pub_bytes): (
+                                        u32,
+                                        u32,
+                                        u32,
+                                        &[u8],
+                                    ) = if needs_tx {
+                                        let (tw, th) = transform_nv12_frame(
+                                            &f.nv12_data,
+                                            f.width,
+                                            f.height,
+                                            f.stride,
+                                            rot,
+                                            fh,
+                                            fv,
+                                            zm,
+                                            &mut transform_scratch,
+                                        );
+                                        (tw, th, tw, &transform_scratch)
+                                    } else {
+                                        let dh = if f.height == 1088 { 1080 } else { f.height };
+                                        (f.width, dh, f.stride, &f.nv12_data)
+                                    };
+
+                                    if pub_w == 0 || pub_h == 0 {
+                                        continue;
+                                    }
+
+                                    video_width_v.store(pub_w, Ordering::Relaxed);
+                                    video_height_v.store(pub_h, Ordering::Relaxed);
+                                    if let Some(ref mut fb) = framebus {
+                                        let _ = fb.write_frame(
+                                            FrameDescriptor {
+                                                state: CameraState::Streaming,
+                                                width: pub_w,
+                                                height: pub_h,
+                                                stride: pub_stride,
+                                                pixel_format: PixelFormat::Nv12,
+                                                fps_num: 60,
+                                                fps_den: 1,
+                                                pts_us: f.pts_us,
+                                            },
+                                            pub_bytes,
+                                        );
+                                    }
+                                    last_video_rx = Some(std::time::Instant::now());
+                                    if live_vcam.is_none() {
+                                        let retry_ok = last_vcam_retry
+                                            .map(|t| {
+                                                t.elapsed() >= std::time::Duration::from_secs(3)
+                                            })
+                                            .unwrap_or(true);
+                                        if retry_ok {
+                                            last_vcam_retry = Some(std::time::Instant::now());
+                                            match crate::video::Win11VirtualCamera::create(
+                                                &cam_name,
+                                            )
+                                            .and_then(|mut v| {
+                                                v.start()?;
+                                                Ok(v)
+                                            }) {
+                                                Ok(v) => {
+                                                    live_vcam = Some(v);
+                                                    vcam_active_v.store(true, Ordering::Release);
+                                                    if let Ok(mut s) = vcam_status_v.lock() {
+                                                        *s = format!(
+                                                            "Active in Apps: \"{cam_name}\" (Win11 Media Foundation)"
+                                                        );
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    vcam_active_v.store(false, Ordering::Release);
+                                                    if let Ok(mut s) = vcam_status_v.lock() {
+                                                        *s = format!(
+                                                            "Virtual Camera error ({err}) — run Setup or register-vcam.ps1 as Admin"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let src_h_for_bgra = if needs_tx { pub_h } else { f.height };
+                                    let (pw, ph) = nv12_to_preview_bgra_box(
+                                        pub_bytes,
+                                        pub_w,
+                                        src_h_for_bgra,
+                                        pub_stride,
+                                        1280,
+                                        720,
+                                        &mut preview_scratch,
+                                    );
+                                    if pw > 0
+                                        && ph > 0
+                                        && let Ok(mut pf) = preview_frame_v.try_lock()
+                                    {
+                                        preview_seq = preview_seq.wrapping_add(1);
+                                        pf.width = pw;
+                                        pf.height = ph;
+                                        pf.seq = preview_seq;
+                                        std::mem::swap(&mut pf.bgra, &mut preview_scratch);
+                                    }
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                drop(live_vcam);
+                vcam_active_v.store(false, Ordering::Release);
+            })
+            .ok();
+        (tx, worker)
+    };
     #[cfg(not(windows))]
     let _ = (
         &vcam_active,
@@ -720,6 +952,7 @@ async fn run_engine_loop(
         &crop_zoom_x100,
     );
 
+    let mut last_any_rx: Option<std::time::Instant> = None;
     let mut udp_sock = UdpMediaSocket::bind(SocketAddr::from(([0, 0, 0, 0], udp_port))).ok();
     let tcp_listener = TcpControlListener::bind(SocketAddr::from(([0, 0, 0, 0], ctrl_port)))
         .await
@@ -758,77 +991,17 @@ async fn run_engine_loop(
     });
     let mut reassembler = VideoReassembler::new();
     let mut frame_10ms = [0.0f32; FRAME_SAMPLES_10MS];
-    #[cfg(windows)]
-    let mut transform_scratch: Vec<u8> = Vec::with_capacity(1920 * 1080 * 3 / 2);
-    #[cfg(windows)]
-    let mut preview_scratch: Vec<u8> = Vec::with_capacity(1280 * 720 * 4);
-    #[cfg(windows)]
-    let mut preview_seq: u64 = 0;
 
     while running.load(Ordering::Acquire) {
         let now = std::time::Instant::now();
         let paused = video_paused.load(Ordering::Relaxed);
         let locked = session_locked.load(Ordering::Relaxed);
 
-        // Tear down the Windows 11 virtual camera immediately when paused, locked,
-        // or after 3s without live video frames (Phone-Link behavior — no black ghost camera!).
-        #[cfg(windows)]
-        {
-            let video_timed_out = last_video_rx
-                .map(|t| now.duration_since(t) > std::time::Duration::from_secs(3))
-                .unwrap_or(false);
-            if (paused || locked || video_timed_out) && live_vcam.is_some() {
-                drop(live_vcam.take());
-                vcam_active.store(false, Ordering::Release);
-                if let Ok(mut s) = vcam_status.lock() {
-                    *s = if locked {
-                        "Privacy Locked (Win+L) — virtual camera hidden".into()
-                    } else if paused {
-                        "Camera Paused — virtual camera hidden".into()
-                    } else {
-                        "Standby — camera appears in apps only while phone is live".into()
-                    };
-                }
-                if video_timed_out {
-                    last_video_rx = None;
-                    if let Ok(mut pf) = preview_frame.try_lock() {
-                        pf.bgra.clear();
-                        pf.width = 0;
-                        pf.height = 0;
-                    }
-                }
-            }
-        }
         if let Some(t) = last_any_rx
             && now.duration_since(t) > std::time::Duration::from_secs(4)
         {
             last_any_rx = None;
             active_tier.store(0, Ordering::Relaxed);
-        }
-
-        if paused || locked {
-            let st = if locked {
-                CameraState::Locked
-            } else {
-                CameraState::Paused
-            };
-            render_nv12_slate(1920, 1080, st, &mut slate_buf);
-            #[cfg(windows)]
-            if let Some(ref mut fb) = framebus {
-                let _ = fb.write_frame(
-                    FrameDescriptor {
-                        state: st,
-                        width: 1920,
-                        height: 1080,
-                        stride: 1920,
-                        pixel_format: PixelFormat::Nv12,
-                        fps_num: 60,
-                        fps_den: 1,
-                        pts_us: 0,
-                    },
-                    &slate_buf,
-                );
-            }
         }
 
         if let Some(ref mut sock) = udp_sock {
@@ -899,132 +1072,11 @@ async fn run_engine_loop(
                             video_frames_rx.fetch_add(1, Ordering::Relaxed);
                             #[cfg(windows)]
                             {
-                                if let Some(want_codec) = stream_type_to_codec(au.stream_type)
-                                    && want_codec != active_codec
-                                {
-                                    active_codec = want_codec;
-                                    mf_decoder = crate::video::MfVideoDecoder::new(
-                                        active_codec,
-                                        1920,
-                                        1080,
-                                        60,
-                                    )
-                                    .ok();
-                                }
-                                if let Some(ref mut dec) = mf_decoder
-                                    && let Ok(frames) = dec.decode_access_unit(&au.data, au.pts_us)
-                                {
-                                    for f in frames {
-                                        let rot = rotation_deg.load(Ordering::Relaxed);
-                                        let fh = flip_h.load(Ordering::Relaxed);
-                                        let fv = flip_v.load(Ordering::Relaxed);
-                                        let zm = crop_zoom_x100.load(Ordering::Relaxed);
-                                        let needs_tx = rot != 0 || fh || fv || zm > 100;
-
-                                        let (pub_w, pub_h, pub_stride, pub_bytes): (
-                                            u32,
-                                            u32,
-                                            u32,
-                                            &[u8],
-                                        ) = if needs_tx {
-                                            let (tw, th) = transform_nv12_frame(
-                                                &f.nv12_data,
-                                                f.width,
-                                                f.height,
-                                                f.stride,
-                                                rot,
-                                                fh,
-                                                fv,
-                                                zm,
-                                                &mut transform_scratch,
-                                            );
-                                            (tw, th, tw, &transform_scratch)
-                                        } else {
-                                            let dh = if f.height == 1088 { 1080 } else { f.height };
-                                            (f.width, dh, f.stride, &f.nv12_data)
-                                        };
-
-                                        if pub_w == 0 || pub_h == 0 {
-                                            continue;
-                                        }
-
-                                        video_width.store(pub_w, Ordering::Relaxed);
-                                        video_height.store(pub_h, Ordering::Relaxed);
-                                        if let Some(ref mut fb) = framebus {
-                                            let _ = fb.write_frame(
-                                                FrameDescriptor {
-                                                    state: CameraState::Streaming,
-                                                    width: pub_w,
-                                                    height: pub_h,
-                                                    stride: pub_stride,
-                                                    pixel_format: PixelFormat::Nv12,
-                                                    fps_num: 60,
-                                                    fps_den: 1,
-                                                    pts_us: f.pts_us,
-                                                },
-                                                pub_bytes,
-                                            );
-                                        }
-                                        // Activate the Windows 11 Virtual Camera ONLY once real frames are flowing!
-                                        last_video_rx = Some(std::time::Instant::now());
-                                        if live_vcam.is_none() {
-                                            let retry_ok = last_vcam_retry
-                                                .map(|t| {
-                                                    t.elapsed() >= std::time::Duration::from_secs(3)
-                                                })
-                                                .unwrap_or(true);
-                                            if retry_ok {
-                                                last_vcam_retry = Some(std::time::Instant::now());
-                                                match crate::video::Win11VirtualCamera::create(
-                                                    &cam_name,
-                                                )
-                                                .and_then(|mut v| {
-                                                    v.start()?;
-                                                    Ok(v)
-                                                }) {
-                                                    Ok(v) => {
-                                                        live_vcam = Some(v);
-                                                        vcam_active.store(true, Ordering::Release);
-                                                        if let Ok(mut s) = vcam_status.lock() {
-                                                            *s = format!(
-                                                                "Active in Apps: \"{cam_name}\" (Win11 Media Foundation)"
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(err) => {
-                                                        vcam_active.store(false, Ordering::Release);
-                                                        if let Ok(mut s) = vcam_status.lock() {
-                                                            *s = format!(
-                                                                "Virtual Camera error ({err}) — run Setup or register-vcam.ps1 as Admin"
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        let src_h_for_bgra =
-                                            if needs_tx { pub_h } else { f.height };
-                                        let (pw, ph) = nv12_to_preview_bgra_box(
-                                            pub_bytes,
-                                            pub_w,
-                                            src_h_for_bgra,
-                                            pub_stride,
-                                            1280,
-                                            720,
-                                            &mut preview_scratch,
-                                        );
-                                        if pw > 0
-                                            && ph > 0
-                                            && let Ok(mut pf) = preview_frame.try_lock()
-                                        {
-                                            preview_seq = preview_seq.wrapping_add(1);
-                                            pf.width = pw;
-                                            pf.height = ph;
-                                            pf.seq = preview_seq;
-                                            std::mem::swap(&mut pf.bgra, &mut preview_scratch);
-                                        }
-                                    }
-                                }
+                                let _ = video_tx.try_send(VideoWorkMsg::Frame {
+                                    stream_type: au.stream_type,
+                                    data: au.data,
+                                    pts_us: au.pts_us,
+                                });
                             }
                         }
                     }
@@ -1055,18 +1107,7 @@ async fn run_engine_loop(
                                     active_tier.store(0, Ordering::Relaxed);
                                     #[cfg(windows)]
                                     {
-                                        last_video_rx = None;
-                                        drop(live_vcam.take());
-                                        vcam_active.store(false, Ordering::Release);
-                                        if let Ok(mut s) = vcam_status.lock() {
-                                            *s = "Standby — camera appears in apps only while phone is live"
-                                                .into();
-                                        }
-                                        if let Ok(mut pf) = preview_frame.try_lock() {
-                                            pf.bgra.clear();
-                                            pf.width = 0;
-                                            pf.height = 0;
-                                        }
+                                        let _ = video_tx.try_send(VideoWorkMsg::Disconnect);
                                     }
                                 }
                                 _ => {}
@@ -1082,7 +1123,12 @@ async fn run_engine_loop(
     }
 
     #[cfg(windows)]
-    drop(live_vcam);
+    {
+        drop(video_tx);
+        if let Some(w) = video_worker {
+            let _ = w.join();
+        }
+    }
     vcam_active.store(false, Ordering::Release);
     if let Some(h) = _tcp_task {
         h.abort();

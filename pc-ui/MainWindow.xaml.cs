@@ -16,6 +16,17 @@ namespace WifiCam.Desktop;
 
 public sealed partial class MainWindow : Window
 {
+    // Pre-allocated brushes (NEVER allocate new SolidColorBrush inside the 30 Hz timer — avoids DWM handle exhaustion!)
+    private static readonly SolidColorBrush BrushLiveGreen = new(Color.FromArgb(255, 34, 197, 94));
+    private static readonly SolidColorBrush BrushWarnAmber = new(Color.FromArgb(255, 245, 158, 11));
+    private static readonly SolidColorBrush BrushAlertRed = new(Color.FromArgb(255, 239, 68, 68));
+    private static readonly SolidColorBrush BrushCoral = new(Color.FromArgb(255, 244, 63, 94));
+    private static readonly SolidColorBrush BrushCyan = new(Color.FromArgb(255, 56, 189, 248));
+    private static readonly SolidColorBrush BrushInkPrimary = new(Color.FromArgb(255, 248, 250, 252));
+    private static readonly SolidColorBrush BrushInkSecondary = new(Color.FromArgb(255, 156, 168, 186));
+    private static readonly SolidColorBrush BrushInkOnAccent = new(Color.FromArgb(255, 6, 16, 24));
+    private static readonly SolidColorBrush BrushVuOff = new(Color.FromArgb(255, 29, 34, 43));
+
     private readonly StudioEngineClient _engine;
     private readonly DispatcherTimer _telemetryTimer;
     private readonly Border[] _vuSegments = new Border[16];
@@ -96,10 +107,7 @@ public sealed partial class MainWindow : Window
         _engineRunning = snap.Running;
 
         TierBadgeText.Text = snap.ActiveTier.ToUpperInvariant();
-        LiveStatusDot.Fill = new SolidColorBrush(
-            snap.Running
-                ? Color.FromArgb(255, 34, 197, 94)
-                : Color.FromArgb(255, 156, 168, 186));
+        LiveStatusDot.Fill = snap.Running ? BrushLiveGreen : BrushInkSecondary;
 
         VideoModeText.Text = $"{snap.VideoWidth}x{snap.VideoHeight} • NV12";
         FramesCounterText.Text = $"VIDEO {snap.VideoFramesRx} f";
@@ -172,10 +180,7 @@ public sealed partial class MainWindow : Window
         VirtualMicStatusText.Text = snap.VirtualMicConnected
             ? snap.VirtualMicName
             : $"Virtual Mic: {snap.VirtualMicName}";
-        VirtualMicStatusText.Foreground = new SolidColorBrush(
-            snap.VirtualMicConnected
-                ? Color.FromArgb(255, 34, 197, 94)
-                : Color.FromArgb(255, 245, 158, 11));
+        VirtualMicStatusText.Foreground = snap.VirtualMicConnected ? BrushLiveGreen : BrushWarnAmber;
         SetupVirtualMicButton.Visibility = snap.VirtualMicConnected ? Visibility.Collapsed : Visibility.Visible;
 
         if (string.IsNullOrEmpty(UsbStatusText.Text) ||
@@ -188,10 +193,7 @@ public sealed partial class MainWindow : Window
             if (!string.IsNullOrEmpty(snap.VcamStatus))
             {
                 UsbStatusText.Text = snap.VcamStatus;
-                UsbStatusText.Foreground = new SolidColorBrush(
-                    snap.VcamActive
-                        ? Color.FromArgb(255, 34, 197, 94)
-                        : Color.FromArgb(255, 156, 168, 186));
+                UsbStatusText.Foreground = snap.VcamActive ? BrushLiveGreen : BrushInkSecondary;
             }
             else
             {
@@ -201,18 +203,21 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        // Update 16-segment Broadcast LED VU meter
+        // Update 16-segment Broadcast LED VU meter (reusing static brushes — zero DWM allocations!)
         var lit = snap.MicMuted ? 0 : snap.VuSegments16;
         for (int i = 0; i < 16; i++)
         {
-            Color color = (i + 1) > lit
-                ? Color.FromArgb(255, 29, 34, 43)
+            var brush = (i + 1) > lit
+                ? BrushVuOff
                 : i < 10
-                    ? Color.FromArgb(255, 34, 197, 94)
+                    ? BrushLiveGreen
                     : i < 14
-                        ? Color.FromArgb(255, 245, 158, 11)
-                        : Color.FromArgb(255, 239, 68, 68);
-            _vuSegments[i].Background = new SolidColorBrush(color);
+                        ? BrushWarnAmber
+                        : BrushAlertRed;
+            if (!ReferenceEquals(_vuSegments[i].Background, brush))
+            {
+                _vuSegments[i].Background = brush;
+            }
         }
 
         VuDbText.Text = snap.MicMuted || snap.RmsDbfsX10 <= -900
@@ -249,14 +254,14 @@ public sealed partial class MainWindow : Window
         if (_engineRunning)
         {
             StartStopButton.Content = "Stop Studio Engine";
-            StartStopButton.Background = new SolidColorBrush(Color.FromArgb(255, 244, 63, 94));
-            StartStopButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 248, 250, 252));
+            StartStopButton.Background = BrushCoral;
+            StartStopButton.Foreground = BrushInkPrimary;
         }
         else
         {
             StartStopButton.Content = "Start Studio Engine";
-            StartStopButton.Background = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
-            StartStopButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 6, 16, 24));
+            StartStopButton.Background = BrushCyan;
+            StartStopButton.Foreground = BrushInkOnAccent;
         }
     }
 
