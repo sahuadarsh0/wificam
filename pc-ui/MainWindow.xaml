@@ -202,9 +202,9 @@
 
                             <ToggleSwitch x:Name="AecToggle"
                                           Header="WebRTC AEC3 Echo Cancellation"
-                                          IsOn="True"
+                                          IsOn="False"
                                           OnContent="Active (Cancels PC Speaker Echo)"
-                                          OffContent="Off (Use with Headphones)"
+                                          OffContent="Off (Recommended — Raw/RNNoise Mic)"
                                           Toggled="OnAecToggled" />
 
                             <StackPanel Spacing="4">

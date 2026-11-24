@@ -129,11 +129,16 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             transportManager.tier.collect { tier ->
+                val wasStreaming = uiState.value.isStreaming
                 uiState.update {
                     it.copy(
                         tier = tier,
                         isPaired = it.isPaired || tier != ActiveTransportTier.DISCONNECTED,
                     )
+                }
+                // If transport drops while streaming, shut camera & stream off cleanly so camera is never stuck on.
+                if (tier == ActiveTransportTier.DISCONNECTED && wasStreaming) {
+                    stopStreaming(statusNote = "Disconnected from PC. Tap RECONNECT when PC is ready.")
                 }
             }
         }
@@ -244,10 +249,10 @@ class MainActivity : ComponentActivity() {
                     onQuickReconnect = {
                         val st = uiState.value
                         if (st.pairedHostIp.isNotBlank() && st.pairedHostIp != "USB AOA") {
-                            transportManager.connectWifi(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
-                            if (!st.isStreaming) {
-                                startStreaming()
-                            }
+                            connectAndStartStreaming(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
+                        } else {
+                            uiState.update { it.copy(isQrScannerOpen = true, isSettingsOpen = false, pendingConsent = null) }
+                            startQrAnalyzer()
                         }
                     },
                     onOpenQrScanner = {
@@ -271,13 +276,11 @@ class MainActivity : ComponentActivity() {
                                 isPaired = true,
                                 pairedHostName = info.hostName,
                                 pairedHostIp = info.ip,
+                                connectionMessage = "Connecting to ${info.hostName}...",
                             )
                         }
                         stopQrAnalyzer()
-                        transportManager.connectFromQrPairing(info)
-                        if (!uiState.value.isStreaming) {
-                            startStreaming()
-                        }
+                        connectAndStartStreaming(info.ip, info.controlPort, info.mediaUdpPort)
                     },
                     onRejectQrPairing = {
                         uiState.update { it.copy(pendingConsent = null) }
@@ -291,13 +294,11 @@ class MainActivity : ComponentActivity() {
                                 isPaired = true,
                                 pairedHostName = "LAN PC",
                                 pairedHostIp = ip,
+                                connectionMessage = "Connecting to $ip...",
                             )
                         }
                         stopQrAnalyzer()
-                        transportManager.connectWifi(ip)
-                        if (!uiState.value.isStreaming) {
-                            startStreaming()
-                        }
+                        connectAndStartStreaming(ip, Brand.DEFAULT_CONTROL_PORT, Brand.DEFAULT_MEDIA_UDP_PORT)
                     },
                     onConnectDiscoveredHost = { host ->
                         saveRememberedHost(host.name, host.ip, host.controlPort, host.mediaUdpPort)
@@ -308,13 +309,11 @@ class MainActivity : ComponentActivity() {
                                 isPaired = true,
                                 pairedHostName = host.name,
                                 pairedHostIp = host.ip,
+                                connectionMessage = "Connecting to ${host.name}...",
                             )
                         }
                         stopQrAnalyzer()
-                        transportManager.connectWifi(host.ip, host.controlPort, host.mediaUdpPort)
-                        if (!uiState.value.isStreaming) {
-                            startStreaming()
-                        }
+                        connectAndStartStreaming(host.ip, host.controlPort, host.mediaUdpPort)
                     },
                     onToggleOledCurtain = {
                         uiState.update { it.copy(isOledCurtainActive = !it.isOledCurtainActive) }
@@ -363,34 +362,67 @@ class MainActivity : ComponentActivity() {
             // If not paired yet, open QR scanner directly instead of starting an unrouted stream.
             uiState.update { it.copy(isQrScannerOpen = true, isSettingsOpen = false, pendingConsent = null) }
             startQrAnalyzer()
+        } else if (st.pairedHostIp.isNotBlank() && st.pairedHostIp != "USB AOA") {
+            connectAndStartStreaming(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
         } else {
-            startStreaming()
+            startStreamingMedia()
         }
     }
 
     private fun restartStreamIfActive() {
-        if (uiState.value.isStreaming) {
-            stopStreaming()
-            startStreaming()
+        if (uiState.value.isStreaming && transportManager.tier.value != ActiveTransportTier.DISCONNECTED) {
+            // Restart encoder/camera cleanly while keeping the active PC connection alive.
+            cameraController.stopCamera()
+            videoEncoder?.stop()
+            videoEncoder = null
+            audioEngine?.stop()
+            audioEngine?.release()
+            audioEngine = null
+            startStreamingMedia()
         }
     }
 
-    private fun startStreaming() {
+    /**
+     * Connect to the PC FIRST; only activate camera & microphone if the PC actually accepts the link!
+     * If the PC is closed or unreachable, camera stays completely OFF.
+     */
+    private fun connectAndStartStreaming(ip: String, controlPort: Int, udpPort: Int) {
         if (!hasRequiredPermissions()) {
             requestRequiredPermissions()
+            return
+        }
+        uiState.update { it.copy(connectionMessage = "Connecting to $ip...") }
+        transportManager.connectWifi(ip, controlPort, udpPort) { connected ->
+            runOnUiThread {
+                if (connected) {
+                    uiState.update { it.copy(connectionMessage = "") }
+                    startStreamingMedia()
+                } else {
+                    cameraController.stopCamera()
+                    uiState.update {
+                        it.copy(
+                            isStreaming = false,
+                            tier = ActiveTransportTier.DISCONNECTED,
+                            connectionMessage = "Could not reach PC ($ip). Open WifiCam Studio on Windows and tap RECONNECT.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startStreamingMedia() {
+        if (!hasRequiredPermissions()) {
+            requestRequiredPermissions()
+            return
+        }
+        if (transportManager.tier.value == ActiveTransportTier.DISCONNECTED) {
             return
         }
         ContextCompat.startForegroundService(this, Intent(this, StreamForegroundService::class.java))
 
         val st = uiState.value
-        if (transportManager.tier.value == ActiveTransportTier.DISCONNECTED) {
-            if (st.isPaired && st.pairedHostIp.isNotBlank() && st.pairedHostIp != "USB AOA") {
-                transportManager.connectWifi(st.pairedHostIp, rememberedControlPort, rememberedUdpPort)
-            } else {
-                transportManager.connectUsbAdb()
-            }
-        }
-        val bitrateKbps = (st.resolution.defaultBitrateKbps * st.quality.multiplier).toInt().coerceAtLeast(500)
+        val bitrateKbps = (st.resolution.defaultBitrateKbps * st.quality.multiplier).toInt().coerceAtLeast(1_500)
         val enc = HardwareVideoEncoder(
             config = VideoEncoderConfig(
                 width = st.resolution.width,
@@ -412,13 +444,13 @@ class MainActivity : ComponentActivity() {
         }
         audioEngine = audio
 
-        uiState.update { it.copy(isStreaming = true) }
+        uiState.update { it.copy(isStreaming = true, connectionMessage = "") }
         restartCameraPipeline()
         sendVideoTransformToPc()
     }
 
-    private fun stopStreaming() {
-        // Notify PC immediately so Windows removes the virtual camera without waiting for timeout.
+    private fun stopStreaming(statusNote: String = "") {
+        // Notify PC immediately over UDP so Windows removes the virtual camera without waiting for timeout.
         runCatching {
             transportManager.enqueuePacket(
                 WirePacket(
@@ -437,7 +469,14 @@ class MainActivity : ComponentActivity() {
         audioEngine?.release()
         audioEngine = null
         transportManager.disconnect()
-        uiState.update { it.copy(isStreaming = false, rmsDbfsX10 = -960, tier = ActiveTransportTier.DISCONNECTED) }
+        uiState.update {
+            it.copy(
+                isStreaming = false,
+                rmsDbfsX10 = -960,
+                tier = ActiveTransportTier.DISCONNECTED,
+                connectionMessage = statusNote,
+            )
+        }
         startService(Intent(this, StreamForegroundService::class.java).apply {
             action = StreamForegroundService.ACTION_STOP
         })
@@ -486,19 +525,28 @@ class MainActivity : ComponentActivity() {
     private fun restartCameraPipeline() {
         if (!hasRequiredPermissions()) return
         val st = uiState.value
-        val cameraShouldRun = (st.isStreaming && !st.isVideoPaused) || st.isQrScannerOpen
+        val isActivelyConnected = st.isStreaming && st.tier != ActiveTransportTier.DISCONNECTED
+        val cameraShouldRun = (isActivelyConnected && !st.isVideoPaused) || st.isQrScannerOpen
         if (!cameraShouldRun) {
             cameraController.stopCamera()
             return
         }
-        val encSurface = if (st.isStreaming && !st.isVideoPaused) {
+        // ALWAYS use the rear 1x lens when scanning QR codes, even if Front camera was selected earlier!
+        val chosenCameraId = if (st.isQrScannerOpen) {
+            st.lenses.firstOrNull { !it.isFront && it.label == "1x" }?.cameraId
+                ?: st.lenses.firstOrNull { !it.isFront }?.cameraId
+                ?: st.activeLensId
+        } else {
+            st.activeLensId
+        }
+        val encSurface = if (isActivelyConnected && !st.isVideoPaused && !st.isQrScannerOpen) {
             runCatching { videoEncoder?.start() }.getOrNull()
         } else {
             null
         }
         cameraController.startCamera(
-            cameraId = st.activeLensId,
-            targetFps = st.fps,
+            cameraId = chosenCameraId,
+            targetFps = if (st.isQrScannerOpen) 30 else st.fps,
             antibandingHz = st.antibandingHz,
             previewSurface = previewSurface,
             encoderSurface = encSurface,

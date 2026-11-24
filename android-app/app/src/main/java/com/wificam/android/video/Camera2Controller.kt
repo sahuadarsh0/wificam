@@ -105,11 +105,22 @@ class Camera2Controller(context: Context) {
         handler: Handler,
         onError: (String) -> Unit,
     ) {
+        val fpsRange = runCatching {
+            val chars = cameraManager.getCameraCharacteristics(device.id)
+            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
+            ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+                ?: ranges.firstOrNull { it.upper == targetFps && it.lower >= 15 }
+                ?: ranges.firstOrNull { it.upper == targetFps }
+                ?: Range(15, targetFps)
+        }.getOrElse { Range(15, targetFps) }
+
         val reqBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
             outputs.forEach { addTarget(it) }
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(targetFps, targetFps))
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+            set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+            set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
             val abMode = when (antibandingHz) {
                 50 -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
                 60 -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ

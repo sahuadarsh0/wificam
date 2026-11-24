@@ -44,7 +44,8 @@ impl AudioSharedState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             muted: AtomicBool::new(false),
-            aec_enabled: AtomicBool::new(true),
+            // Default AEC off until user explicitly enables it so dry mic voice is never over-attenuated.
+            aec_enabled: AtomicBool::new(false),
             denoise_mode: AtomicU8::new(DenoiseMode::RnNoise as u8),
             gain_db_x10: AtomicI16::new(0),
             peak_dbfs_x10: AtomicI16::new(-960),

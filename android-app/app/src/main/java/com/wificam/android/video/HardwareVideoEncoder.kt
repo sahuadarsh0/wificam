@@ -54,10 +54,15 @@ class HardwareVideoEncoder(
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
             )
             setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateKbps * 1000)
-            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            // VBR + H.264 High Profile yields dramatically sharper detail than CBR Baseline at the same bitrate.
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
             setInteger(MediaFormat.KEY_PRIORITY, 0) // Real-time priority
+            if (config.codec == AndroidVideoCodec.H264) {
+                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+                setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel41)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
@@ -67,7 +72,18 @@ class HardwareVideoEncoder(
         }
 
         val enc = MediaCodec.createEncoderByType(config.codec.mimeType)
-        enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        runCatching {
+            enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }.onFailure {
+            // Fallback cleanly if a specific SoC rejects High Profile/Level41 attributes.
+            val fallbackFmt = MediaFormat.createVideoFormat(config.codec.mimeType, config.width, config.height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateKbps * 1000)
+                setInteger(MediaFormat.KEY_FRAME_RATE, config.fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            }
+            enc.configure(fallbackFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
         val surface = enc.createInputSurface()
         enc.start()
 

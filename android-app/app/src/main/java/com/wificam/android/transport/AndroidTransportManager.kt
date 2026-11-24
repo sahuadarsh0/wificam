@@ -69,8 +69,8 @@ class AndroidTransportManager(
     private val _discoveredHosts = MutableStateFlow<List<DiscoveredHost>>(emptyList())
     val discoveredHosts: StateFlow<List<DiscoveredHost>> = _discoveredHosts.asStateFlow()
 
-    private val highPriorityQueue = LinkedBlockingQueue<WirePacket>(256)
-    private val videoQueue = LinkedBlockingQueue<WirePacket>(512)
+    private val highPriorityQueue = LinkedBlockingQueue<WirePacket>(512)
+    private val videoQueue = LinkedBlockingQueue<WirePacket>(2048)
     private val heartbeatSeq = AtomicInteger(0)
 
     private var txJob: Job? = null
@@ -129,17 +129,22 @@ class AndroidTransportManager(
     }
 
     /** Connect over Wi-Fi LAN using either a QR-scanned [PairingInfo] or mDNS host. */
-    fun connectWifi(ip: String, controlPort: Int = Brand.DEFAULT_CONTROL_PORT, mediaUdpPort: Int = Brand.DEFAULT_MEDIA_UDP_PORT) {
+    fun connectWifi(
+        ip: String,
+        controlPort: Int = Brand.DEFAULT_CONTROL_PORT,
+        mediaUdpPort: Int = Brand.DEFAULT_MEDIA_UDP_PORT,
+        onResult: (Boolean) -> Unit = {},
+    ) {
         disconnect()
         scope.launch(Dispatchers.IO) {
-            runCatching {
+            val ok = runCatching {
                 val addr = InetAddress.getByName(ip)
                 val tcp = Socket().apply {
                     tcpNoDelay = true
                     connect(InetSocketAddress(addr, controlPort), 2500)
                 }
                 val udp = DatagramSocket().apply {
-                    sendBufferSize = 2 * 1024 * 1024
+                    sendBufferSize = 4 * 1024 * 1024
                 }
                 activeTcp = tcp
                 activeStreamOut = tcp.getOutputStream()
@@ -148,14 +153,17 @@ class AndroidTransportManager(
                 udpTargetPort = mediaUdpPort
                 _tier.value = ActiveTransportTier.WIFI_LAN
                 startTxLoop(useUdp = true)
-            }.onFailure {
+                true
+            }.getOrElse {
                 _tier.value = ActiveTransportTier.DISCONNECTED
+                false
             }
+            onResult(ok)
         }
     }
 
-    fun connectFromQrPairing(info: PairingInfo) {
-        connectWifi(info.ip, info.controlPort, info.mediaUdpPort)
+    fun connectFromQrPairing(info: PairingInfo, onResult: (Boolean) -> Unit = {}) {
+        connectWifi(info.ip, info.controlPort, info.mediaUdpPort, onResult)
     }
 
     /** Start Bluetooth Classic RFCOMM audio failover listener. */
@@ -258,11 +266,14 @@ class AndroidTransportManager(
                 }
                 val wire = PacketCodec.encode(finalPkt)
                 val ok = runCatching {
-                    if (useUdp && (finalPkt.streamType.isAudio || finalPkt.streamType.isVideo)) {
+                    if (useUdp) {
+                        // Route Audio, Video, Control (transforms/disconnect), and Heartbeat over UDP so pc-core receives all of them cleanly.
                         val udp = activeUdp
                         val addr = udpTargetAddr
                         if (udp != null && addr != null) {
                             udp.send(DatagramPacket(wire, wire.size, addr, udpTargetPort))
+                        } else {
+                            return@runCatching false
                         }
                     } else {
                         activeStreamOut?.write(wire)

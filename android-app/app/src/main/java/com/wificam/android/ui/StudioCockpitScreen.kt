@@ -62,8 +62,8 @@ data class StudioUiState(
     val lenses: List<CameraLensOption> = listOf(CameraLensOption("0", "1x", false, 4.2f)),
     val activeLensId: String = "0",
     val resolution: VideoResolutionPreset = VideoResolutionPreset.R1080P,
-    val quality: VideoQualityPreset = VideoQualityPreset.BALANCED,
-    val fps: Int = 60,
+    val quality: VideoQualityPreset = VideoQualityPreset.HIGH,
+    val fps: Int = 30,
     val codec: AndroidVideoCodec = AndroidVideoCodec.H264,
     val isVideoPaused: Boolean = false,
     val isMicMuted: Boolean = false,
@@ -79,6 +79,7 @@ data class StudioUiState(
     val previewFlipV: Boolean = false,
     val previewCropMode: PreviewCropMode = PreviewCropMode.FIT,
     val hasPermissions: Boolean = false,
+    val connectionMessage: String = "",
 )
 
 enum class PreviewCropMode(val label: String, val zoom: Float) {
@@ -213,7 +214,11 @@ fun StudioCockpitScreen(
                         isStreaming = state.isStreaming,
                         tier = state.tier,
                         hostName = state.pairedHostName,
-                        onClick = if (state.isPaired) onOpenSettings else onOpenQrScanner,
+                        onClick = when {
+                            state.isPaired && !state.isStreaming -> onQuickReconnect
+                            state.isPaired -> onOpenSettings
+                            else -> onOpenQrScanner
+                        },
                         modifier = Modifier.weight(1f, fill = false),
                     )
 
@@ -260,9 +265,10 @@ fun StudioCockpitScreen(
                 }
             }
 
-            val cameraShouldDisplay = (state.isStreaming && !state.isVideoPaused) || state.isQrScannerOpen
+            val isConnectedLive = state.isStreaming && state.tier != ActiveTransportTier.DISCONNECTED
+            val cameraShouldDisplay = (isConnectedLive && !state.isVideoPaused) || state.isQrScannerOpen
 
-            // 2. Framed Center Camera Preview Stage (OFF when not live or paused!)
+            // 2. Framed Center Camera Preview Stage (OFF when not connected/live or paused!)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -278,9 +284,10 @@ fun StudioCockpitScreen(
                 } else if (!cameraShouldDisplay) {
                     CameraOffStandbyStage(
                         isPaired = state.isPaired,
-                        isVideoPaused = state.isStreaming && state.isVideoPaused,
+                        isVideoPaused = isConnectedLive && state.isVideoPaused,
                         pairedHostName = state.pairedHostName,
                         pairedHostIp = state.pairedHostIp,
+                        connectionMessage = state.connectionMessage,
                     )
                 } else {
                     AndroidView(
@@ -535,6 +542,7 @@ private fun CameraOffStandbyStage(
     isVideoPaused: Boolean,
     pairedHostName: String,
     pairedHostIp: String,
+    connectionMessage: String = "",
 ) {
     Column(
         modifier = Modifier.padding(24.dp),
@@ -563,12 +571,13 @@ private fun CameraOffStandbyStage(
         )
         Text(
             text = when {
+                connectionMessage.isNotBlank() -> connectionMessage
                 isVideoPaused -> "Your camera sensor is off while video is paused. Mic remains active."
-                isPaired -> "Saved PC: $pairedHostName ($pairedHostIp). Tap RECONNECT below to go live."
-                else -> "Camera stays off until you connect. Tap CONNECT PC below to scan your PC QR code."
+                isPaired -> "Saved PC: $pairedHostName ($pairedHostIp). Tap PAIRED or RECONNECT to go live."
+                else -> "Camera stays off until connected. Tap CONNECT PC below to scan your PC QR code."
             },
             style = MaterialTheme.typography.bodyMedium,
-            color = StudioTokens.InkSecondary,
+            color = if (connectionMessage.startsWith("Could not")) StudioTokens.StatusWarn else StudioTokens.InkSecondary,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
@@ -621,7 +630,7 @@ private fun PairingStatusPill(
         isStreaming && tier != ActiveTransportTier.DISCONNECTED -> {
             if (hostName.isNotEmpty()) "LIVE · ${tier.badge} · $hostName" else "LIVE · ${tier.badge}"
         }
-        isPaired -> if (hostName.isNotEmpty()) "PAIRED · $hostName" else "PAIRED"
+        isPaired -> if (hostName.isNotEmpty()) "PAIRED · $hostName · Rejoin" else "PAIRED · Rejoin"
         else -> "NOT PAIRED · Tap QR"
     }
     val textColor = when {

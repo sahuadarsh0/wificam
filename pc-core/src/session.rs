@@ -116,15 +116,34 @@ pub fn nv12_to_preview_bgra_box(
     let uv_plane = &nv12[y_plane_bytes..y_plane_bytes + uv_plane_bytes];
 
     for dy in 0..dst_h {
-        let sy = (dy as u64 * display_h as u64 / dst_h as u64) as usize;
-        let y_row = sy * stride as usize;
-        let uv_row = (sy >> 1) * stride as usize;
+        // Bilinear luma interpolation so downscaled Windows preview stays razor-sharp (no jagged aliasing).
+        let sy_f = (dy as f64) * (display_h as f64) / (dst_h as f64);
+        let sy0 = (sy_f.floor() as usize).min((display_h - 1) as usize);
+        let sy1 = (sy0 + 1).min((display_h - 1) as usize);
+        let wy = ((sy_f - sy0 as f64) * 256.0) as i32;
+        let wy_inv = 256 - wy;
+
+        let y_row0 = sy0 * stride as usize;
+        let y_row1 = sy1 * stride as usize;
+        let uv_row = (sy0 >> 1) * stride as usize;
         let dst_row = (dy as usize) * (dst_w as usize) * 4;
 
         for dx in 0..dst_w {
-            let sx = (dx as u64 * src_w as u64 / dst_w as u64) as usize;
-            let y_val = y_plane[y_row + sx] as i32;
-            let uv_idx = uv_row + (sx & !1);
+            let sx_f = (dx as f64) * (src_w as f64) / (dst_w as f64);
+            let sx0 = (sx_f.floor() as usize).min((src_w - 1) as usize);
+            let sx1 = (sx0 + 1).min((src_w - 1) as usize);
+            let wx = ((sx_f - sx0 as f64) * 256.0) as i32;
+            let wx_inv = 256 - wx;
+
+            let y00 = y_plane[y_row0 + sx0] as i32;
+            let y10 = y_plane[y_row0 + sx1] as i32;
+            let y01 = y_plane[y_row1 + sx0] as i32;
+            let y11 = y_plane[y_row1 + sx1] as i32;
+            let y_top = (y00 * wx_inv + y10 * wx) >> 8;
+            let y_bot = (y01 * wx_inv + y11 * wx) >> 8;
+            let y_val = (y_top * wy_inv + y_bot * wy) >> 8;
+
+            let uv_idx = uv_row + (sx0 & !1);
             let u_val = uv_plane[uv_idx] as i32 - 128;
             let v_val = uv_plane[uv_idx + 1] as i32 - 128;
 
@@ -705,12 +724,44 @@ async fn run_engine_loop(
     let tcp_listener = TcpControlListener::bind(SocketAddr::from(([0, 0, 0, 0], ctrl_port)))
         .await
         .ok();
+    // Spawn lightweight TCP control acceptor so Android's TCP reachability check & keepalive
+    // stay cleanly accepted and never hit a full backlog or reset.
+    let _tcp_task = tcp_listener.map(|listener| {
+        let run_flag = running.clone();
+        tokio::spawn(async move {
+            while run_flag.load(Ordering::Acquire) {
+                if let Ok(Ok((mut stream, _peer))) = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    listener.accept_raw(),
+                )
+                .await
+                {
+                    let rf = run_flag.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::AsyncReadExt;
+                        let mut sink = [0u8; 2048];
+                        while rf.load(Ordering::Acquire) {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                stream.read(&mut sink),
+                            )
+                            .await
+                            {
+                                Ok(Ok(0)) | Ok(Err(_)) => break,
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+            }
+        })
+    });
     let mut reassembler = VideoReassembler::new();
     let mut frame_10ms = [0.0f32; FRAME_SAMPLES_10MS];
     #[cfg(windows)]
     let mut transform_scratch: Vec<u8> = Vec::with_capacity(1920 * 1080 * 3 / 2);
     #[cfg(windows)]
-    let mut preview_scratch: Vec<u8> = Vec::with_capacity(960 * 540 * 4);
+    let mut preview_scratch: Vec<u8> = Vec::with_capacity(1280 * 720 * 4);
     #[cfg(windows)]
     let mut preview_seq: u64 = 0;
 
@@ -953,12 +1004,13 @@ async fn run_engine_loop(
                                         }
                                         let src_h_for_bgra =
                                             if needs_tx { pub_h } else { f.height };
-                                        let (pw, ph) = nv12_to_preview_bgra(
+                                        let (pw, ph) = nv12_to_preview_bgra_box(
                                             pub_bytes,
                                             pub_w,
                                             src_h_for_bgra,
                                             pub_stride,
-                                            960,
+                                            1280,
+                                            720,
                                             &mut preview_scratch,
                                         );
                                         if pw > 0
@@ -1032,7 +1084,9 @@ async fn run_engine_loop(
     #[cfg(windows)]
     drop(live_vcam);
     vcam_active.store(false, Ordering::Release);
-    drop(tcp_listener);
+    if let Some(h) = _tcp_task {
+        h.abort();
+    }
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ public sealed partial class MainWindow : Window
     private readonly StudioEngineClient _engine;
     private readonly DispatcherTimer _telemetryTimer;
     private readonly Border[] _vuSegments = new Border[16];
-    private readonly byte[] _previewBgraBuf = new byte[960 * 960 * 4];
+    private readonly byte[] _previewBgraBuf = new byte[1280 * 720 * 4];
     private WriteableBitmap? _previewBitmap;
     private ulong _lastPreviewSeq;
     private ushort _rotationDeg;

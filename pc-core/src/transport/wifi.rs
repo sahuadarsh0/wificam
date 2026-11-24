@@ -18,8 +18,8 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::protocol::{Packet, PacketCodec, ProtocolError};
 use crate::security::{SecurityError, SessionCipher};
 
-/// 2 MiB UDP socket receive/send buffer to absorb 4K IDR bursts cleanly.
-pub const UDP_SOCKET_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+/// 4 MiB UDP socket receive/send buffer to absorb 1080p/4K High-Profile IDR bursts cleanly.
+pub const UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Maximum single UDP datagram payload accepted (64 KiB).
 pub const MAX_UDP_DATAGRAM_BYTES: usize = 65_507;
@@ -208,6 +208,12 @@ impl TcpControlListener {
     pub async fn accept(&self) -> Result<(FramedTcpConnection, SocketAddr), WifiTransportError> {
         let (stream, peer) = self.listener.accept().await?;
         Ok((FramedTcpConnection::from_stream(stream)?, peer))
+    }
+
+    pub async fn accept_raw(&self) -> Result<(TcpStream, SocketAddr), WifiTransportError> {
+        let (stream, peer) = self.listener.accept().await?;
+        let _ = stream.set_nodelay(true);
+        Ok((stream, peer))
     }
 }
 

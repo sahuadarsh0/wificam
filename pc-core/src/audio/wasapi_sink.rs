@@ -47,6 +47,10 @@ pub enum WasapiError {
 /// audio internally into a Windows virtual microphone capture endpoint.
 pub fn is_known_virtual_cable_name(friendly_name: &str) -> bool {
     let lower = friendly_name.to_ascii_lowercase();
+    // Skip VB-Cable's 16-channel secondary endpoint when the standard stereo CABLE Input is preferred.
+    if lower.contains("16ch") || lower.contains("16 ch") {
+        return false;
+    }
     let positive_markers = [
         "cable input",
         "vb-audio",
@@ -300,6 +304,13 @@ fn run_render_session(
             let render: IAudioRenderClient = client
                 .GetService()
                 .map_err(|e| WasapiError::Platform(e.to_string()))?;
+
+            // Pre-fill initial silent buffer BEFORE Start() as required by WASAPI event-driven mode.
+            if let Ok(ptr) = render.GetBuffer(buffer_frames) {
+                let dst = std::slice::from_raw_parts_mut(ptr.cast::<f32>(), buffer_frames as usize);
+                dst.fill(0.0);
+                let _ = render.ReleaseBuffer(buffer_frames, 0);
+            }
 
             client
                 .Start()
