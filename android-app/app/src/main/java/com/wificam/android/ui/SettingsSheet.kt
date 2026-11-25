@@ -77,6 +77,8 @@ fun SettingsSheet(
     onOpenQrScanner: () -> Unit,
     onReconnect: () -> Unit,
     onUnpair: () -> Unit,
+    onToggleBackgroundStreaming: (Boolean) -> Unit,
+    onMinimizeToBackground: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
@@ -203,6 +205,55 @@ fun SettingsSheet(
                         ) {
                             Text("Unpair", color = StudioTokens.StatusAlert)
                         }
+                    }
+                }
+            }
+
+            // Background Streaming Mode (keeps Camera2 + Mic alive when minimized / screen off)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(StudioTokens.RadiusMd))
+                    .background(StudioTokens.SurfaceCard)
+                    .border(1.dp, StudioTokens.BorderSubtle, RoundedCornerShape(StudioTokens.RadiusMd))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "WORK IN BACKGROUND",
+                            style = StudioTelemetryStyle.copy(fontSize = 11.sp),
+                            color = StudioTokens.AccentPrimary,
+                        )
+                        Text(
+                            text = if (state.backgroundStreamingEnabled) {
+                                "Camera & mic keep streaming when minimized or screen turns off"
+                            } else {
+                                "Streaming pauses when you leave the app"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioTokens.InkSecondary,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = state.backgroundStreamingEnabled,
+                        onCheckedChange = onToggleBackgroundStreaming,
+                    )
+                }
+                if (state.isStreaming && state.backgroundStreamingEnabled) {
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onMinimizeToBackground()
+                        },
+                        shape = RoundedCornerShape(StudioTokens.RadiusSm),
+                    ) {
+                        Text("Minimize to Background Now", color = StudioTokens.AccentPrimary)
                     }
                 }
             }

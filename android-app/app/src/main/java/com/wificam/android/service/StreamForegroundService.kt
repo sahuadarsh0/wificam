@@ -7,11 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.wificam.android.MainActivity
 import com.wificam.android.core.Brand
 
@@ -32,6 +34,11 @@ class StreamForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                if (intent.getBooleanExtra(EXTRA_FROM_NOTIFICATION, false)) {
+                    sendBroadcast(
+                        Intent(ACTION_STOP_STREAM_BROADCAST).setPackage(packageName)
+                    )
+                }
                 releaseLocks()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -40,7 +47,13 @@ class StreamForegroundService : Service() {
         }
 
         acquireLocks()
-        startForeground(NOTIFICATION_ID, buildNotification("Streaming live to PC"))
+        val notification = buildNotification("Camera & mic streaming live in background")
+        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
         return START_STICKY
     }
 
@@ -101,8 +114,11 @@ class StreamForegroundService : Service() {
         val stopIntent = PendingIntent.getService(
             this,
             1,
-            Intent(this, StreamForegroundService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE,
+            Intent(this, StreamForegroundService::class.java).apply {
+                action = ACTION_STOP
+                putExtra(EXTRA_FROM_NOTIFICATION, true)
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("${Brand.APP_DISPLAY_NAME} Studio Active")
@@ -110,7 +126,7 @@ class StreamForegroundService : Service() {
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setOngoing(true)
             .setContentIntent(openIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", stopIntent)
+            .addAction(android.R.drawable.ic_media_pause, "Stop Live", stopIntent)
             .build()
     }
 
@@ -118,5 +134,7 @@ class StreamForegroundService : Service() {
         const val CHANNEL_ID = "wificam_stream_channel"
         const val NOTIFICATION_ID = 4201
         const val ACTION_STOP = "com.wificam.android.ACTION_STOP"
+        const val ACTION_STOP_STREAM_BROADCAST = "com.wificam.android.ACTION_STOP_STREAM_BROADCAST"
+        const val EXTRA_FROM_NOTIFICATION = "from_notification"
     }
 }

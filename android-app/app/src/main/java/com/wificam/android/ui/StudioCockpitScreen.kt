@@ -79,6 +79,7 @@ data class StudioUiState(
     val previewFlipV: Boolean = false,
     val previewCropMode: PreviewCropMode = PreviewCropMode.FIT,
     val hasPermissions: Boolean = false,
+    val backgroundStreamingEnabled: Boolean = true,
     val connectionMessage: String = "",
 )
 
@@ -178,6 +179,8 @@ fun StudioCockpitScreen(
     onManualIpConnect: (String) -> Unit,
     onConnectDiscoveredHost: (DiscoveredHost) -> Unit,
     onToggleOledCurtain: () -> Unit,
+    onToggleBackgroundStreaming: (Boolean) -> Unit,
+    onMinimizeToBackground: () -> Unit,
     onRequestPermissions: () -> Unit,
 ) {
     val previewBufferW = state.resolution.width.coerceAtMost(1920)
@@ -224,13 +227,16 @@ fun StudioCockpitScreen(
 
                     Spacer(modifier = Modifier.width(12.dp))
 
+                    val isConnectedHeader = state.isStreaming && state.tier != ActiveTransportTier.DISCONNECTED
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        TopActionIcon(
-                            icon = Icons.Rounded.QrCodeScanner,
-                            contentDescription = "Connect to PC via QR",
-                            tint = StudioTokens.AccentPrimary,
-                            onClick = onOpenQrScanner,
-                        )
+                        if (!isConnectedHeader) {
+                            TopActionIcon(
+                                icon = Icons.Rounded.QrCodeScanner,
+                                contentDescription = "Connect to PC via QR",
+                                tint = StudioTokens.AccentPrimary,
+                                onClick = onOpenQrScanner,
+                            )
+                        }
                         TopActionIcon(
                             icon = Icons.Rounded.DarkMode,
                             contentDescription = "OLED Curtain Mode",
@@ -510,6 +516,8 @@ fun StudioCockpitScreen(
                 onOpenQrScanner = onOpenQrScanner,
                 onReconnect = onQuickReconnect,
                 onUnpair = onUnpair,
+                onToggleBackgroundStreaming = onToggleBackgroundStreaming,
+                onMinimizeToBackground = onMinimizeToBackground,
                 onDismiss = onCloseSettings,
             )
         }

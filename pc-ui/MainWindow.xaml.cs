@@ -29,6 +29,7 @@ public sealed partial class MainWindow : Window
 
     private readonly StudioEngineClient _engine;
     private readonly DispatcherTimer _telemetryTimer;
+    private readonly SystemTrayIcon _trayIcon;
     private readonly Border[] _vuSegments = new Border[16];
     private readonly byte[] _previewBgraBuf = new byte[1280 * 720 * 4];
     private WriteableBitmap? _previewBitmap;
@@ -36,6 +37,8 @@ public sealed partial class MainWindow : Window
     private ushort _rotationDeg;
     private ushort _cropZoomX100 = 100;
     private bool _engineRunning;
+    private bool _hiddenInTray;
+    private bool _forceExit;
     private string _renderedQrUri = "";
 
     public MainWindow()
@@ -75,12 +78,82 @@ public sealed partial class MainWindow : Window
         }
         RefreshTelemetry();
 
+        // System Tray background mode: keep Virtual Camera & Studio Mic running when minimized or closed.
+        _trayIcon = new SystemTrayIcon(this, icoPath, "WifiCam Studio — Background Ready");
+        _trayIcon.OpenRequested += () => DispatcherQueue.TryEnqueue(RestoreFromTray);
+        _trayIcon.ToggleMuteRequested += () => DispatcherQueue.TryEnqueue(() =>
+        {
+            MuteMicToggle.IsChecked = !(MuteMicToggle.IsChecked == true);
+            _engine.SetMuted(MuteMicToggle.IsChecked == true);
+        });
+        _trayIcon.TogglePauseRequested += () => DispatcherQueue.TryEnqueue(() =>
+        {
+            PauseVideoToggle.IsChecked = !(PauseVideoToggle.IsChecked == true);
+            _engine.SetVideoPaused(PauseVideoToggle.IsChecked == true);
+        });
+        _trayIcon.ExitRequested += () => DispatcherQueue.TryEnqueue(ExitApplication);
+
+        AppWindow.Closing += (_, args) =>
+        {
+            if (!_forceExit && MinimizeToTrayToggle?.IsOn == true)
+            {
+                args.Cancel = true;
+                HideToTray();
+            }
+        };
+
+        AppWindow.Changed += (_, args) =>
+        {
+            if (args.DidPresenterChange &&
+                !_hiddenInTray &&
+                MinimizeToTrayToggle?.IsOn == true &&
+                AppWindow.Presenter is OverlappedPresenter presenter &&
+                presenter.State == OverlappedPresenterState.Minimized)
+            {
+                HideToTray();
+            }
+        };
+
         Closed += (_, _) =>
         {
             _telemetryTimer.Stop();
+            _trayIcon.Dispose();
             SystemEvents.SessionSwitch -= OnWindowsSessionSwitch;
             _engine.Dispose();
         };
+    }
+
+    private void HideToTray()
+    {
+        if (_hiddenInTray) return;
+        _hiddenInTray = true;
+        // Pause UI timer while hidden in tray so background CPU/GPU overhead is ~0%, while engine keeps streaming!
+        _telemetryTimer.Stop();
+        AppWindow.Hide();
+        _trayIcon.UpdateTooltip(_engineRunning
+            ? "WifiCam Studio — Running in background (Click to open)"
+            : "WifiCam Studio — Standby (Click to open)");
+    }
+
+    private void RestoreFromTray()
+    {
+        _hiddenInTray = false;
+        AppWindow.Show();
+        if (AppWindow.Presenter is OverlappedPresenter presenter &&
+            presenter.State == OverlappedPresenterState.Minimized)
+        {
+            presenter.Restore();
+        }
+        Activate();
+        _telemetryTimer.Start();
+        RefreshTelemetry();
+    }
+
+    private void ExitApplication()
+    {
+        _forceExit = true;
+        _hiddenInTray = false;
+        Close();
     }
 
     private void BuildVuMeterSegments()
@@ -134,6 +207,7 @@ public sealed partial class MainWindow : Window
         }
 
         bool isPhoneConnected = snap.Running && !snap.ActiveTier.StartsWith("Standby", StringComparison.OrdinalIgnoreCase);
+        QrPairingCard.Visibility = isPhoneConnected ? Visibility.Collapsed : Visibility.Visible;
 
         ViewportHeadline.Text = snap.SessionLocked
             ? "Privacy Locked (Win+L)"

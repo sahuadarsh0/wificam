@@ -166,8 +166,8 @@
                 <!-- RIGHT COLUMN: Fast Wireless QR Pairing, AI Audio DSP & Privacy -->
                 <StackPanel Grid.Column="1" Spacing="16">
 
-                    <!-- Connect Phone to This PC (QR Code) -->
-                    <Border Background="{StaticResource StudioElevatedBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="18" Padding="18">
+                    <!-- Connect Phone to This PC (QR Code — hidden automatically while phone is connected) -->
+                    <Border x:Name="QrPairingCard" Background="{StaticResource StudioElevatedBrush}" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="18" Padding="18">
                         <StackPanel Spacing="12">
                             <TextBlock Text="Connect Phone to This PC" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource StudioInkPrimaryBrush}" />
                             <TextBlock Text="Open WifiCam on Android and scan this PC pairing code to stream directly to this computer." FontSize="12" Foreground="{StaticResource StudioInkSecondaryBrush}" TextWrapping="Wrap" />
@@ -220,6 +220,12 @@
                                           IsOn="True"
                                           OnContent="Auto-pause camera &amp; mute mic on Windows lock"
                                           OffContent="Disabled" />
+
+                            <ToggleSwitch x:Name="MinimizeToTrayToggle"
+                                          Header="Minimize to System Tray"
+                                          IsOn="True"
+                                          OnContent="Keep camera &amp; mic live in tray when minimized or closed"
+                                          OffContent="Exit app when window is closed" />
                         </StackPanel>
                     </Border>
                 </StackPanel>

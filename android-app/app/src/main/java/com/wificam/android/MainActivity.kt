@@ -1,8 +1,10 @@
 package com.wificam.android
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.hardware.usb.UsbAccessory
@@ -59,6 +61,14 @@ class MainActivity : ComponentActivity() {
     private var rememberedUdpPort: Int = Brand.DEFAULT_MEDIA_UDP_PORT
     private var controlSeq: Int = 1
 
+    private val notificationStopReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == StreamForegroundService.ACTION_STOP_STREAM_BROADCAST) {
+                stopStreaming(statusNote = "Stopped from notification.")
+            }
+        }
+    }
+
     private val uiState = MutableStateFlow(StudioUiState())
 
     private fun sendVideoTransformToPc() {
@@ -89,7 +99,12 @@ class MainActivity : ComponentActivity() {
 
     private fun loadRememberedHost() {
         val prefs = getSharedPreferences("wificam_pairing", Context.MODE_PRIVATE)
-        val ip = prefs.getString("host_ip", null)?.takeIf { it.isNotBlank() } ?: return
+        val bgEnabled = prefs.getBoolean("background_streaming", true)
+        val ip = prefs.getString("host_ip", null)?.takeIf { it.isNotBlank() }
+        if (ip == null) {
+            uiState.update { it.copy(backgroundStreamingEnabled = bgEnabled) }
+            return
+        }
         val name = prefs.getString("host_name", "Last PC") ?: "Last PC"
         rememberedControlPort = prefs.getInt("control_port", Brand.DEFAULT_CONTROL_PORT)
         rememberedUdpPort = prefs.getInt("udp_port", Brand.DEFAULT_MEDIA_UDP_PORT)
@@ -98,6 +113,7 @@ class MainActivity : ComponentActivity() {
                 isPaired = true,
                 pairedHostName = name,
                 pairedHostIp = ip,
+                backgroundStreamingEnabled = bgEnabled,
             )
         }
     }
@@ -154,6 +170,12 @@ class MainActivity : ComponentActivity() {
             uiState.update { it.copy(lenses = cameraController.discoverLenses()) }
         }
         loadRememberedHost()
+        ContextCompat.registerReceiver(
+            this,
+            notificationStopReceiver,
+            IntentFilter(StreamForegroundService.ACTION_STOP_STREAM_BROADCAST),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         transportManager.startLanDiscovery()
         handleUsbAccessoryIntent(intent)
 
@@ -168,7 +190,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onPreviewSurfaceDestroyed = {
                         previewSurface = null
-                        cameraController.stopCamera()
+                        val st = uiState.value
+                        val keepInBg = st.isStreaming &&
+                            st.tier != ActiveTransportTier.DISCONNECTED &&
+                            st.backgroundStreamingEnabled &&
+                            !st.isVideoPaused &&
+                            !st.isQrScannerOpen
+                        if (keepInBg) {
+                            // Continue streaming headless directly into hardware MediaCodec Surface in background!
+                            restartCameraPipeline()
+                        } else {
+                            cameraController.stopCamera()
+                        }
                     },
                     onToggleStream = ::toggleStreaming,
                     onToggleVideoPause = {
@@ -318,9 +351,27 @@ class MainActivity : ComponentActivity() {
                     onToggleOledCurtain = {
                         uiState.update { it.copy(isOledCurtainActive = !it.isOledCurtainActive) }
                     },
+                    onToggleBackgroundStreaming = { enabled ->
+                        getSharedPreferences("wificam_pairing", Context.MODE_PRIVATE)
+                            .edit()
+                            .putBoolean("background_streaming", enabled)
+                            .apply()
+                        uiState.update { it.copy(backgroundStreamingEnabled = enabled) }
+                    },
+                    onMinimizeToBackground = {
+                        moveTaskToBack(true)
+                    },
                     onRequestPermissions = ::requestRequiredPermissions,
                 )
             }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val st = uiState.value
+        if (st.isStreaming && !st.backgroundStreamingEnabled && !isChangingConfigurations) {
+            stopStreaming(statusNote = "Stream stopped when app went to background.")
         }
     }
 
@@ -330,8 +381,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        stopStreaming()
+        runCatching { unregisterReceiver(notificationStopReceiver) }
         stopQrAnalyzer()
+        stopStreaming()
         transportManager.stopLanDiscovery()
         transportManager.disconnect()
         cameraController.stopCamera()
