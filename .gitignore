@@ -36,3 +36,6 @@ Desktop.ini
 
 # Local agent plans/scratch
 .hermes/
+
+# Kotlin Gradle compiler temp/error logs
+android-app/.kotlin/
