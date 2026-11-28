@@ -44,6 +44,7 @@ public sealed class SystemTrayIcon : IDisposable
 
     private readonly nint _hwnd;
     private readonly uint _taskbarCreatedMsg;
+    private readonly uint _showExistingWindowMsg;
     private readonly SubclassProcDelegate _subclassProc;
     private nint _hIcon;
     private bool _added;
@@ -58,6 +59,7 @@ public sealed class SystemTrayIcon : IDisposable
     {
         _hwnd = WindowNative.GetWindowHandle(window);
         _taskbarCreatedMsg = RegisterWindowMessageW("TaskbarCreated");
+        _showExistingWindowMsg = RegisterWindowMessageW(App.ShowExistingWindowMessageName);
 
         if (File.Exists(iconPath))
         {
@@ -73,6 +75,13 @@ public sealed class SystemTrayIcon : IDisposable
         AddIcon(tooltip);
     }
 
+    public void BringToForeground()
+    {
+        if (_disposed) return;
+        ShowWindow(_hwnd, 9); // SW_RESTORE
+        SetForegroundWindow(_hwnd);
+    }
+
     public void UpdateTooltip(string tooltip)
     {
         if (_disposed || !_added) return;
@@ -83,6 +92,9 @@ public sealed class SystemTrayIcon : IDisposable
 
     private void AddIcon(string tooltip)
     {
+        var del = CreateNotifyData("");
+        Shell_NotifyIconW(NIM_DELETE, ref del);
+
         var nid = CreateNotifyData(tooltip);
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         _added = Shell_NotifyIconW(NIM_ADD, ref nid);
@@ -116,6 +128,11 @@ public sealed class SystemTrayIcon : IDisposable
                 ShowContextMenu();
                 return nint.Zero;
             }
+        }
+        else if (_showExistingWindowMsg != 0 && uMsg == _showExistingWindowMsg)
+        {
+            OpenRequested?.Invoke();
+            return nint.Zero;
         }
         else if (_taskbarCreatedMsg != 0 && uMsg == _taskbarCreatedMsg)
         {
@@ -275,6 +292,9 @@ public sealed class SystemTrayIcon : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
     private static extern bool PostMessageW(nint hWnd, uint msg, nuint wParam, nint lParam);

@@ -144,6 +144,7 @@ public sealed partial class MainWindow : Window
         {
             presenter.Restore();
         }
+        _trayIcon.BringToForeground();
         Activate();
         _telemetryTimer.Start();
         RefreshTelemetry();
